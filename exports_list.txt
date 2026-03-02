@@ -1,0 +1,13 @@
+createPurchase
+getAllPurchases
+getPurchaseById
+updatePurchase
+deletePurchase
+createRental
+getAllRentals
+getRentalById
+updateRental
+deleteRental
+addPayment
+closeRental
+getClientMaterialHistory

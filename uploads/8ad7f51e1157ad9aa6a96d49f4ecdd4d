@@ -1,0 +1,3 @@
+name,email,empID,labourType,wagesType,salaryPerDay,password
+Ravi,ravi@gmail.com,EMP002,Skilled,daily,400,emp@123
+Mani,mani@gmail.com,EMP003,Helper,daily,350,emp@123
