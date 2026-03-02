@@ -6,18 +6,19 @@ const { authorize } = require("../middleware/role.middleware");
 
 
 
-// 🔓 Public Routes
-router.post("/register", addadminController.registerAdmin);
+// 🔓 Public Routes (login flow — must stay public)
 router.post("/login", addadminController.loginAdmin);
 router.post("/mfa-setup", addadminController.setupMfa);
 router.post("/mfa", addadminController.verifyMfa);
 
-// 🔒 Protected Routes
+// 🔒 Protected Routes (admin only)
+router.post("/register", verifyToken, authorize(["admin"]), addadminController.registerAdmin);
 router.post("/add", verifyToken, addadminController.addAdmin);
-router.get("/", verifyToken, addadminController.getAdmins);
-router.put("/:empID", verifyToken, addadminController.updateAdmin);
-router.delete("/:empID", verifyToken, addadminController.deleteAdmin);
+router.get("/", verifyToken, authorize(["admin"]), addadminController.getAdmins);
+router.put("/:empID", verifyToken, authorize(["admin"]), addadminController.updateAdmin);
+router.delete("/:empID", verifyToken, authorize(["admin"]), addadminController.deleteAdmin);
 router.get("/profile", verifyToken, addadminController.getAdminProfile);
+
 
 
 

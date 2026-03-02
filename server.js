@@ -6,9 +6,12 @@ const { generateMonthlySalary } = require("./src/services/salary.service");
 
 const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, async () => {
+app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
-    await createDefaultAdmin();
+
+    createDefaultAdmin().catch(err => {
+        console.error("Default admin creation failed:", err.message);
+    });
 });
 
 

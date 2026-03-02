@@ -8,10 +8,15 @@ dotenv.config();
 
 const app = express();
 
+
 app.use(express.json());
-app.use(cors());
+app.use(cors({
+    origin: process.env.FRONTEND_URL || '*',   // Set FRONTEND_URL in Railway to lock down CORS
+    credentials: true
+}));
 app.use(helmet());
-app.use(morgan("dev"));
+app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
+
 
 // Routes
 app.use("/api/auth", require("./routes/auth.routes"));
