@@ -1,7 +1,5 @@
 const bcrypt = require("bcryptjs");
 const { db } = require("../config/firebase");
-const { fetchSalaryByEmpID } = require("../controllers/salary.controller");
-
 const USERS = "users";
 const ATTENDANCE = "attendance";
 const dayjs = require("dayjs");
@@ -166,8 +164,8 @@ exports.getDashboard = async (req, res) => {
             };
         });
 
-        const salaryRaw = await fetchSalaryByEmpID(user.empID);
-
+        // The salary module was deleted, stub to empty array until re-implemented
+        const salaryRaw = [];
         // ✅ Format salary timestamps
         const salary = salaryRaw.map(item => ({
             ...item,

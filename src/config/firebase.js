@@ -19,9 +19,11 @@ const serviceAccount = {
 if (!admin.apps.length) {
     admin.initializeApp({
         credential: admin.credential.cert(serviceAccount),
+        storageBucket: process.env.FIREBASE_STORAGE_BUCKET || `${process.env.FIREBASE_PROJECT_ID}.appspot.com`
     });
 }
 
 const db = admin.firestore();
+const storage = admin.storage();
 
-module.exports = { admin, db };
+module.exports = { admin, db, storage };

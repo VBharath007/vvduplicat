@@ -5,7 +5,7 @@ const { verifyToken } = require("../middleware/auth.middleware");
 const { authorize } = require("../middleware/role.middleware");
 const adminController = require("../controllers/admin.controller");
 const employeeController = require("../controllers/employee.controller");
-const salaryController = require("../controllers/salary.controller");
+
 
 
 

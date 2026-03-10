@@ -7,6 +7,7 @@ exports.validateCreateMaterial = [
 
 exports.validateDealerPurchase = [
     body("dealerName").notEmpty().withMessage("Dealer name is required"),
+    body("dealerPhone").optional().isString().withMessage("Dealer phone must be a string"),
     body("quantity").isFloat({ min: 0.01 }).withMessage("Quantity must be a positive number"),
     body("amountPerUnit").isFloat({ min: 0 }).withMessage("Amount per unit must be a non-negative number"),
     body("date").notEmpty().withMessage("Date is required"),

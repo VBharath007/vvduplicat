@@ -1,63 +1,79 @@
-
-
-const { db } = require('../config/firebase'); // Centralized DB import
+const { db } = require('../config/firebase');
 const admin = require('firebase-admin');
 
-// 🟢 CREATE: Add Task (Today / Weekly / Monthly)
+const COLLECTION = 'tasks';
+
+// Helper to format timestamps
+function formatDoc(doc) {
+    if (!doc.exists) return null;
+    const data = doc.data();
+    const id = doc.id;
+
+    if (data.createdAt && typeof data.createdAt.toDate === 'function') {
+        data.createdAt = data.createdAt.toDate().toISOString();
+    }
+    if (data.updatedAt && typeof data.updatedAt.toDate === 'function') {
+        data.updatedAt = data.updatedAt.toDate().toISOString();
+    }
+    return { id, ...data };
+}
+
+// 🟢 CREATE: Add Task (Daily / Weekly / Monthly)
 exports.saveTask = async (taskData) => {
-    // Basic Task Structure — use null fallbacks so Firestore never gets undefined
+    const now = new Date().toISOString();
+
     let taskObject = {
-        taskName: taskData.taskName || null,
-        priority: taskData.priority || null,
-        section: taskData.section || null,
+        taskName: taskData.taskName || '',
+        priority: taskData.priority || 'Medium',
         status: taskData.status || 'Pending',
-        createdAt: admin.firestore.Timestamp.now()
+        type: taskData.type || taskData.section || 'Daily', // Daily, Weekly, Monthly
+        createdAt: now,
+        updatedAt: now
     };
 
-    // --- Section logic based on your requirement ---
-    if (taskData.section === 'Today') {
-        taskObject.startTime = taskData.startTime || null;
-        taskObject.endTime = taskData.endTime || null;
+    // --- Section logic ---
+    if (taskObject.type === 'Daily') {
+        taskObject.startTime = taskData.startTime || '';
+        taskObject.endTime = taskData.endTime || '';
     } else {
-        // For Weekly and Monthly sections
-        taskObject.startDate = taskData.startDate || null;
-        taskObject.endDate = taskData.endDate || null;
+        // For Weekly and Monthly
+        taskObject.startDate = taskData.startDate || '';
+        taskObject.endDate = taskData.endDate || '';
     }
 
-    // Saving to 'tasks' collection
-    const docRef = await db.collection('tasks').add(taskObject);
-    return { id: docRef.id, ...taskObject };
+    const docRef = await db.collection(COLLECTION).add(taskObject);
+    const snap = await docRef.get();
+    return formatDoc(snap);
 };
 
-// 🔵 READ: Get History by Section
-exports.getHistoryBySection = async (sectionName) => {
-    const snapshot = await db.collection('tasks')
-        .where('section', '==', sectionName)
+// 🔵 READ: Get History by Type
+exports.getTasksByType = async (type) => {
+    const snapshot = await db.collection(COLLECTION)
+        .where('type', '==', type)
+        .orderBy('createdAt', 'desc')
         .get();
 
-    let history = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-
-    // 🕒 Manual Sorting (Recent First) - Idhu index error varaama thadukkum
-    history.sort((a, b) => {
-        const timeA = a.createdAt?.toMillis() || 0;
-        const timeB = b.createdAt?.toMillis() || 0;
-        return timeB - timeA;
-    });
-
-    return history;
+    return snapshot.docs.map(doc => formatDoc(doc));
 };
 
-// 🟡 UPDATE: Edit Task details or status
+// 🟡 UPDATE: Edit Task
 exports.updateTask = async (id, updateData) => {
-    await db.collection('tasks').doc(id).update({
+    const docRef = db.collection(COLLECTION).doc(id);
+    const snap = await docRef.get();
+    if (!snap.exists) throw new Error('Task not found');
+
+    const data = {
         ...updateData,
-        updatedAt: admin.firestore.Timestamp.now()
-    });
-    return { id, message: "Task updated successfully" };
+        updatedAt: new Date().toISOString()
+    };
+
+    await docRef.update(data);
+    const updatedSnap = await docRef.get();
+    return formatDoc(updatedSnap);
 };
 
 // 🔴 DELETE: Remove task
 exports.deleteTask = async (id) => {
-    await db.collection('tasks').doc(id).delete();
-    return { message: "Task deleted from history" };
+    await db.collection(COLLECTION).doc(id).delete();
+    return { id, message: "Task deleted successfully" };
 };

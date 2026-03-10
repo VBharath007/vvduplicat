@@ -69,7 +69,7 @@ exports.deletePurchase = async (req, res, next) => {
 exports.createRental = async (req, res, next) => {
     try {
         checkValidation(req);
-        const rental = await mouldService.createRental(req.body);
+        const rental = await mouldService.createRental(req.params.id, req.body);
         res.status(201).json({ success: true, data: rental });
     } catch (error) {
         next(error);
@@ -153,6 +153,21 @@ exports.getClientMaterialHistory = async (req, res, next) => {
     }
 };
 
+exports.getCustomerLedger = async (req, res, next) => {
+    try {
+        const { phoneNumber } = req.params;
+        if (!phoneNumber) {
+            return res.status(400).json({ success: false, message: "phoneNumber is required" });
+        }
+        // Properly decode the phone number just in case the UI sends it URL encoded (like %2B91)
+        const decodedPhone = decodeURIComponent(phoneNumber);
+        const ledger = await mouldService.getCustomerLedger(decodedPhone);
+        res.status(200).json({ success: true, data: ledger });
+    } catch (error) {
+        next(error);
+    }
+};
+
 exports.calculateRental = async (req, res, next) => {
     try {
         checkValidation(req);
@@ -168,6 +183,28 @@ exports.paymentUpdate = async (req, res, next) => {
         checkValidation(req);
         const result = await mouldService.paymentUpdate(req.params.id, req.body);
         res.status(200).json(result);
+    } catch (error) {
+        next(error);
+    }
+};
+
+/**
+ * MOULD GENERAL INVENTORY
+ */
+exports.addNewMould = async (req, res, next) => {
+    try {
+        checkValidation(req);
+        const mould = await mouldService.addNewMould(req.body);
+        res.status(201).json({ success: true, data: mould });
+    } catch (error) {
+        next(error);
+    }
+};
+
+exports.getAllMoulds = async (req, res, next) => {
+    try {
+        const moulds = await mouldService.getAllMoulds();
+        res.status(200).json({ success: true, data: moulds });
     } catch (error) {
         next(error);
     }

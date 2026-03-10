@@ -1,23 +1,25 @@
 const express = require("express");
 const router = express.Router();
 const materialController = require("./material.controller");
-const materialValidation = require("./material.validation");
-const { verifyToken } = require("../../middleware/auth.middleware");
-const { authorize } = require("../../middleware/role.middleware");
 
-const isAdmin = [verifyToken, authorize(["admin"])];
+// --- Material Master --- //
+router.post("/", materialController.createMaterial);
+router.get("/", materialController.getMaterials);
 
-/** Material CRUD */
-router.post("/", isAdmin, materialValidation.validateCreateMaterial, materialController.createMaterial);
-router.get("/", isAdmin, materialController.getAllMaterials);
-router.get("/:id", isAdmin, materialController.getMaterialById);
-router.put("/:id", isAdmin, materialController.updateMaterial);
-router.delete("/:id", isAdmin, materialController.deleteMaterial);
+// --- Material Received --- //
+router.post("/received", materialController.recordMaterialReceived);
+router.get("/received", materialController.getMaterialReceived);
+router.put("/received/:receiptId/payment", materialController.updateReceiptPayment);
 
-/** Dealer Operations */
-router.post("/:id/purchase", isAdmin, materialValidation.validateDealerPurchase, materialController.dealerPurchase);
+// --- Material Used --- //
+router.post("/used", materialController.recordMaterialUsed);
 
-/** Dealer Payment — uses dealerId in URL */
-router.put("/:materialId/dealer/:dealerId/payment", isAdmin, materialValidation.validateDealerPayment, materialController.dealerPayment);
+// --- Material Stock --- //
+router.get("/stock", materialController.getMaterialStock);
+
+// --- Material Required --- //
+router.post("/required", materialController.addMaterialRequired);
+router.put("/required/:id", materialController.updateMaterialRequired);
+router.get("/required/:projectNo", materialController.getMaterialRequired);
 
 module.exports = router;

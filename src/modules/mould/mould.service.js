@@ -1,8 +1,9 @@
-const { db } = require("../../config/firebase");
+const { db, admin } = require("../../config/firebase");
 const dayjs = require("dayjs");
 
 const MOULD_PURCHASES = "mould_purchases";
 const MOULD_RENTALS = "mould_rentals";
+const MOULDS = "moulds"; // New collection for general mould inventory
 
 const nowIST = () => new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
 
@@ -156,89 +157,87 @@ exports.deletePurchase = async (id) => {
  * RENTAL MANAGEMENT
  */
 
-exports.createRental = async (data) => {
-    const { clientName, startDate, endDate, items } = data;
-    const start = dayjs(startDate);
-    const end = dayjs(endDate);
-    const usedDays = Math.max(1, end.diff(start, "day") + 1);
-    const daysInMonth = start.daysInMonth();
+exports.createRental = async (mouldId, data) => {
+    const {
+        customerName,
+        phoneNumber,
+        customerLocation,
+        rentalBasis,
+        quantity,
+        rate,
+        approxReturnDate,
+        actualReturnDate,
+        amountPaid,
+        paymentStatus
+    } = data;
+
     const now = nowIST();
 
-    let totalMonthlyRent = 0;
-    let totalUsedRent = 0;
-    const updatedItems = [];
+    // Look up Mould to automatically link the exactly correct name and actual mouldId
+    let computedMouldName = "";
+    let computedMouldId = mouldId || "";
+    let firestoreMouldId = mouldId || "";
 
-    for (const item of items) {
-        const purchaseRef = db.collection(MOULD_PURCHASES).doc(item.materialId);
-        const purchaseDoc = await purchaseRef.get();
-        if (!purchaseDoc.exists) throw new Error(`Purchase item ${item.materialId} not found`);
+    if (mouldId) {
+        // Try fetching it as a Firestore Document ID
+        let mouldDoc = await db.collection(MOULDS).doc(mouldId).get();
 
-        const purchaseData = purchaseDoc.data();
-        const stock = purchaseData.stock || {
-            availableStock: purchaseData.availableStock || 0,
-            usedStock: purchaseData.usedStock || 0
-        };
-
-        if (stock.availableStock < item.quantity) {
-            throw new Error(`Insufficient stock for ${purchaseData.materialName}. Available: ${stock.availableStock}`);
+        // If not found, try fetching it as a custom mouldId (e.g. "MLD-77824")
+        if (!mouldDoc.exists) {
+            const snapshot = await db.collection(MOULDS).where("mouldId", "==", mouldId).get();
+            if (!snapshot.empty) {
+                mouldDoc = snapshot.docs[0];
+            }
         }
 
-        const dailyRent = purchaseData.rent?.rentAmount || 0;
-        const perItemRent = dailyRent * item.quantity;
-
-        const itemMonthlyTotal = perItemRent * daysInMonth;
-        const itemUsedRent = perItemRent * usedDays;
-
-        totalMonthlyRent += itemMonthlyTotal;
-        totalUsedRent += itemUsedRent;
-
-        await purchaseRef.update({
-            "stock.availableStock": stock.availableStock - item.quantity,
-            "stock.usedStock": stock.usedStock + item.quantity,
-            updatedAt: now
-        });
-
-        updatedItems.push({
-            materialId: item.materialId,
-            materialName: purchaseData.materialName,
-            size: purchaseData.size,
-            unitType: purchaseData.unitType,
-            quantity: item.quantity,
-            rent: {
-                totalrentAmount: perItemRent
-            },
-            peritemRent: dailyRent
-        });
+        if (mouldDoc && mouldDoc.exists) {
+            const mData = mouldDoc.data();
+            computedMouldName = mData.mouldName || "";
+            // Keep the clean custom ID (overwriting the Firestore hash ID) if available
+            computedMouldId = mData.mouldId || mouldId;
+            firestoreMouldId = mouldDoc.id;
+        }
     }
 
-    const paid = Math.round(totalMonthlyRent);
-    const balance = paid - Math.round(totalUsedRent);
-
     const docRef = db.collection(MOULD_RENTALS).doc();
+
+    // Perform server-side calculations
+    const qtyNum = Number(quantity || 0);
+    const rateNum = Number(rate || 0);
+    const amountPaidNum = Number(amountPaid || 0);
+
+    const calculatedTotalAmount = qtyNum * rateNum;
+    const calculatedBalanceToPay = calculatedTotalAmount - amountPaidNum;
+
+    // Setup flat rental record representing the UI segments
     const rentalData = {
         id: docRef.id,
-        clientName,
-        rentalPeriod: {
-            startDate,
-            endDate,
-            usedDays,
-            daysInMonth
+        mouldId: computedMouldId,
+        mouldName: computedMouldName,
+        customerName: customerName || "",
+        phoneNumber: phoneNumber || "",
+        customerLocation: customerLocation || "",
+        rentalTerms: {
+            rentalBasis: rentalBasis || "Day",
+            quantity: qtyNum,
+            rate: rateNum
         },
-        rentSummary: {
-            monthlyTotal: Math.round(totalMonthlyRent),
-            usedRent: Math.round(totalUsedRent),
-            paid: paid,
-            balance: balance
+        trackingDates: {
+            approxReturnDate: approxReturnDate || "",
+            actualReturnDate: actualReturnDate || ""
         },
-        items: updatedItems,
-        status: "ACTIVE",
+        paymentDetails: {
+            totalAmount: calculatedTotalAmount,
+            amountPaid: amountPaidNum,
+            balanceToPay: calculatedBalanceToPay,
+            paymentStatus: paymentStatus || "Pending"
+        },
+        status: paymentStatus === "Paid" && actualReturnDate ? "COMPLETED" : "ACTIVE",
         createdAt: now,
         updatedAt: now
     };
 
     await docRef.set(rentalData);
-
-    // Return the response structured specifically as requested:
     return rentalData;
 };
 
@@ -324,48 +323,54 @@ exports.updateRental = async (id, body) => {
     if (body.addPayment !== undefined) {
         const addAmt = Number(body.addPayment);
 
-        // Support both old flat & new nested format
-        const totalCalculatedRent = rental.rentSummary?.monthlyTotal ??
-            rental.calculation?.totalCalculatedRent ??
-            rental.calculation?.totalUsedAmount ??
-            rental.totalCalculatedRent ?? 0;
+        const totalAmount = rental.paymentDetails?.totalAmount ?? 0;
+        const currentPaid = rental.paymentDetails?.amountPaid ?? 0;
+        const balanceToPay = totalAmount - currentPaid;
 
-        // FIX: Sum fresh from paymentHistory (avoids stale payment.totalPaidAmount bug)
-        const existingHistory = rental.paymentHistory || [];
-        const historyTotal = existingHistory.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
-        const newTotalPaid = historyTotal + addAmt;
-        const newPending = Math.max(0, totalCalculatedRent - newTotalPaid);
-        const newBalance = Math.max(0, newTotalPaid - totalCalculatedRent);
+        if (addAmt > balanceToPay) {
+            const err = new Error(`Payment failed. Total amount is ${totalAmount}, you already paid ${currentPaid}. Your remaining balance is ${balanceToPay}. You cannot pay more than the balance.`);
+            err.statusCode = 400;
+            throw err;
+        }
+
+        const newAmountPaid = currentPaid + addAmt;
+        const newBalanceToPay = Math.max(0, totalAmount - newAmountPaid);
+        const newPaymentStatus = newBalanceToPay <= 0 ? "Paid" : "Pending";
 
         const updatedHistory = [
-            ...existingHistory,
+            ...(rental.paymentHistory || []),
             { amount: addAmt, date: now, note: body.note || "Payment Added" }
         ];
 
-        const updatedPayment = {
-            initialPayment: rental.payment?.initialPayment ?? rental.initialPayment ?? 0,
-            totalPaidAmount: newTotalPaid,
-            pendingAmount: newPending,
-            balance: newBalance
+        const updatedPaymentDetails = {
+            totalAmount,
+            amountPaid: newAmountPaid,
+            balanceToPay: newBalanceToPay,
+            paymentStatus: newPaymentStatus
         };
 
-        await docRef.update({
-            payment: updatedPayment,
-            totalCalculatedRent: totalCalculatedRent,
-            totalPaidAmount: newTotalPaid,
-            pendingAmount: newPending,
-            balance: newBalance,
+        const updatePayload = {
+            paymentDetails: updatedPaymentDetails,
             paymentHistory: updatedHistory,
-            updatedAt: now
-        });
+            updatedAt: now,
 
-        return {
-            totalCalculatedRent: totalCalculatedRent,
-            totalPaidAmount: newTotalPaid,
-            pendingAmount: newPending,
-            balance: newBalance,
-            paymentHistory: updatedHistory
+            // CLEANUP: Delete legacy cluttered fields
+            payment: admin.firestore.FieldValue.delete(),
+            totalCalculatedRent: admin.firestore.FieldValue.delete(),
+            totalPaidAmount: admin.firestore.FieldValue.delete(),
+            pendingAmount: admin.firestore.FieldValue.delete(),
+            balance: admin.firestore.FieldValue.delete(),
+            rentSummary: admin.firestore.FieldValue.delete(),
+            initialPayment: admin.firestore.FieldValue.delete(),
+            totalUsedAmount: admin.firestore.FieldValue.delete(),
+            calculation: admin.firestore.FieldValue.delete()
         };
+
+        await docRef.update(updatePayload);
+
+        // Fetch fresh record to return clean response structure (without Deleted fields)
+        const freshDoc = await docRef.get();
+        return freshDoc.data();
     }
 
     // Generic update
@@ -409,37 +414,56 @@ exports.paymentUpdate = async (id, body) => {
     const rental = doc.data();
     const now = nowIST();
 
-    const currentBalance = rental.rentSummary?.balance ?? 0;
+    const currentBalance = rental.paymentDetails?.balanceToPay ?? 0;
+    const totalAmount = rental.paymentDetails?.totalAmount ?? 0;
+    const currentPaid = rental.paymentDetails?.amountPaid ?? 0;
 
-    if (payAmount > currentBalance) {
-        const err = new Error(`Payment amount (${payAmount}) exceeds current balance (${currentBalance})`);
+    const payAmtNum = Number(payAmount || 0);
+    if (payAmtNum > currentBalance) {
+        const err = new Error(`Payment failed. You have already completed the payment process or the amount (₹${payAmtNum}) exceeds the remaining balance (₹${currentBalance}).`);
         err.statusCode = 400;
         throw err;
     }
 
-    const newBalance = Math.round(currentBalance - payAmount);
+    const newAmountPaid = currentPaid + payAmtNum;
+    const newBalanceToPay = Math.max(0, totalAmount - newAmountPaid);
+    const newPaymentStatus = newBalanceToPay <= 0 ? "Paid" : "Pending";
 
-    const existingHistory = rental.paymentHistory || [];
-    const updatedHistory = [
-        ...existingHistory,
-        { amount: payAmount, note: note || "Payment", date: now }
-    ];
-
-    const updatedRentSummary = {
-        ...rental.rentSummary,
-        balance: newBalance
+    const updatedPaymentDetails = {
+        totalAmount,
+        amountPaid: newAmountPaid,
+        balanceToPay: newBalanceToPay,
+        paymentStatus: newPaymentStatus
     };
 
-    const newStatus = newBalance === 0 ? "COMPLETED" : rental.status;
+    const updatedHistory = [
+        ...(rental.paymentHistory || []),
+        { amount: payAmount, note: note || "Manual Balance Update", date: now }
+    ];
 
-    await docRef.update({
-        rentSummary: updatedRentSummary,
+    const newStatus = (newBalanceToPay <= 0 && rental.trackingDates?.actualReturnDate) ? "COMPLETED" : rental.status;
+
+    const updatePayload = {
+        paymentDetails: updatedPaymentDetails,
         paymentHistory: updatedHistory,
         status: newStatus,
-        updatedAt: now
-    });
+        updatedAt: now,
 
-    return { status: "Payment successfully completed" };
+        // CLEANUP: Delete legacy cluttered fields
+        payment: admin.firestore.FieldValue.delete(),
+        totalCalculatedRent: admin.firestore.FieldValue.delete(),
+        totalPaidAmount: admin.firestore.FieldValue.delete(),
+        pendingAmount: admin.firestore.FieldValue.delete(),
+        balance: admin.firestore.FieldValue.delete(),
+        rentSummary: admin.firestore.FieldValue.delete(),
+        initialPayment: admin.firestore.FieldValue.delete(),
+        totalUsedAmount: admin.firestore.FieldValue.delete(),
+        calculation: admin.firestore.FieldValue.delete()
+    };
+
+    await docRef.update(updatePayload);
+
+    return { success: true, message: "Payment successfully updated", data: updatedPaymentDetails };
 };
 
 exports.addPayment = async (rentalId, paymentInfo) => {
@@ -451,48 +475,54 @@ exports.addPayment = async (rentalId, paymentInfo) => {
     const rental = doc.data();
     const now = nowIST();
 
-    const totalCalculatedRent = rental.calculation?.totalCalculatedRent ??
-        rental.calculation?.totalUsedAmount ??
-        rental.totalCalculatedRent ??
-        rental.totalUsedAmount ??
-        0;
-    const existingHistory = rental.paymentHistory || [];
-    const historyTotal = existingHistory.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
-    const newTotalPaid = historyTotal + amount;
-    const newPending = Math.max(0, totalCalculatedRent - newTotalPaid);
-    const newBalance = Math.max(0, newTotalPaid - totalCalculatedRent);
+    const currentDetails = rental.paymentDetails || {
+        totalAmount: rental.rentSummary?.monthlyTotal ?? 0,
+        amountPaid: rental.rentSummary?.paid ?? 0,
+        balanceToPay: rental.rentSummary?.balance ?? 0,
+        paymentStatus: "Pending"
+    };
 
-    const updatedPayment = {
-        initialPayment: rental.payment?.initialPayment ?? rental.initialPayment ?? 0,
-        totalPaidAmount: newTotalPaid,
-        pendingAmount: newPending,
-        balance: newBalance
+    const payAmount = Number(amount || 0);
+    if (payAmount > currentDetails.balanceToPay) {
+        const err = new Error(`Payment failed. You have already completed the payment process or the amount (₹${payAmount}) exceeds the remaining balance (₹${currentDetails.balanceToPay}).`);
+        err.statusCode = 400;
+        throw err;
+    }
+    const newAmountPaid = (currentDetails.amountPaid || 0) + payAmount;
+    const newBalanceToPay = Math.max(0, (currentDetails.totalAmount || 0) - newAmountPaid);
+    const newPaymentStatus = newBalanceToPay <= 0 ? "Paid" : "Pending";
+
+    const updatedPaymentDetails = {
+        totalAmount: currentDetails.totalAmount || 0,
+        amountPaid: newAmountPaid,
+        balanceToPay: newBalanceToPay,
+        paymentStatus: newPaymentStatus
     };
 
     const updatedHistory = [
-        ...existingHistory,
-        { amount, date: date || now, note }
+        ...(rental.paymentHistory || []),
+        { amount: payAmount, date: date || now, note: note || "Manual Payment" }
     ];
 
     await docRef.update({
-        payment: updatedPayment,
-        totalCalculatedRent: totalCalculatedRent,
-        totalPaidAmount: newTotalPaid,
-        pendingAmount: newPending,
-        balance: newBalance,
+        paymentDetails: updatedPaymentDetails,
         paymentHistory: updatedHistory,
-        updatedAt: now
+        updatedAt: now,
+
+        // CLEANUP: Delete legacy cluttered fields
+        payment: admin.firestore.FieldValue.delete(),
+        totalCalculatedRent: admin.firestore.FieldValue.delete(),
+        totalPaidAmount: admin.firestore.FieldValue.delete(),
+        pendingAmount: admin.firestore.FieldValue.delete(),
+        balance: admin.firestore.FieldValue.delete(),
+        rentSummary: admin.firestore.FieldValue.delete(),
+        initialPayment: admin.firestore.FieldValue.delete(),
+        totalUsedAmount: admin.firestore.FieldValue.delete(),
+        calculation: admin.firestore.FieldValue.delete()
     });
 
-    return {
-        ...rental,
-        payment: updatedPayment,
-        totalCalculatedRent: totalCalculatedRent,
-        totalPaidAmount: newTotalPaid,
-        pendingAmount: newPending,
-        balance: newBalance,
-        paymentHistory: updatedHistory
-    };
+    const freshDoc = await docRef.get();
+    return freshDoc.data();
 };
 
 exports.closeRental = async (rentalId) => {
@@ -543,6 +573,106 @@ exports.getClientMaterialHistory = async (clientName, materialId) => {
 
     history.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     return history;
+};
+
+exports.getCustomerLedger = async (phoneNumber) => {
+    const snapshot = await db.collection(MOULD_RENTALS)
+        .where("phoneNumber", "==", phoneNumber)
+        .get();
+
+    const historyList = [];
+    let activeTransaction = null;
+    let customerName = "";
+    let customerLocation = "";
+
+    snapshot.docs.forEach(doc => {
+        const rental = doc.data();
+        if (!customerName && rental.customerName) customerName = rental.customerName;
+        if (!customerLocation && rental.customerLocation) customerLocation = rental.customerLocation;
+
+        const isLegacy = !rental.rentalTerms && rental.items && rental.items.length > 0;
+
+        let extractedMouldId = rental.mouldId || "UNKNOWN-ID";
+        let extractedMouldName = rental.mouldName || "Unknown Mould (Legacy DB Record)";
+        let extractedQuantity = rental.rentalTerms?.quantity || 0;
+        let extractedRentType = rental.rentalTerms?.rentalBasis || "Day";
+        let extractedTotal = rental.paymentDetails?.totalAmount || 0;
+        let extractedPaid = rental.paymentDetails?.amountPaid || 0;
+        let extractedBalance = rental.paymentDetails?.balanceToPay || 0;
+        let extractedPaymentStatus = rental.paymentDetails?.paymentStatus || "Unpaid";
+
+        if (isLegacy) {
+            extractedMouldId = rental.items[0]?.materialId || "";
+            extractedMouldName = rental.items[0]?.materialName || "Legacy Mould Item";
+            extractedQuantity = rental.items[0]?.quantity || 1;
+            extractedRentType = "Month"; // Legacy was typically monthly logic
+            extractedTotal = rental.rentSummary?.monthlyTotal || 0;
+            extractedPaid = rental.rentSummary?.paid || 0;
+            extractedBalance = rental.rentSummary?.balance || 0;
+            extractedPaymentStatus = extractedBalance <= 0 ? "Paid" : "Pending";
+        }
+
+        const formattedRecord = {
+            id: rental.id,
+            mouldId: extractedMouldId,
+            mouldName: extractedMouldName,
+            date: rental.createdAt ? rental.createdAt.split(",")[0] : "",
+            createdAt: rental.createdAt || "",
+            quantity: extractedQuantity,
+            rentType: extractedRentType,
+            totalAmount: extractedTotal,
+            amountPaid: extractedPaid,
+            balanceToPay: extractedBalance,
+            status: rental.status,
+            paymentStatus: extractedPaymentStatus
+        };
+
+        // Date parser since en-IN emits DD/MM/YYYY which JS standard Date doesn't always handle
+        const getTimestamp = (dStr) => {
+            if (!dStr) return 0;
+            const parts = dStr.split(", ");
+            if (parts.length === 2) {
+                const [d, m, y] = parts[0].split("/");
+                return new Date(`${m}/${d}/${y} ${parts[1]}`).getTime();
+            }
+            return new Date(dStr).getTime() || 0;
+        };
+
+        if (rental.status === "ACTIVE") {
+            // Keep the most recent active transaction
+            if (!activeTransaction || getTimestamp(rental.createdAt) > getTimestamp(activeTransaction.createdAt)) {
+                if (activeTransaction) historyList.push(activeTransaction); // Move older active to history
+                activeTransaction = formattedRecord;
+            } else {
+                historyList.push(formattedRecord); // Push directly if it is older
+            }
+        } else {
+            historyList.push(formattedRecord);
+        }
+    });
+
+    historyList.sort((a, b) => {
+        const getTimestamp = (dStr) => {
+            if (!dStr) return 0;
+            const parts = dStr.split(", ");
+            if (parts.length === 2) {
+                const [d, m, y] = parts[0].split("/");
+                return new Date(`${m}/${d}/${y} ${parts[1]}`).getTime();
+            }
+            return new Date(dStr).getTime() || 0;
+        };
+        return getTimestamp(b.createdAt) - getTimestamp(a.createdAt);
+    });
+
+    return {
+        customerInfo: {
+            customerName,
+            phoneNumber,
+            customerLocation
+        },
+        activeTransaction,
+        historyList
+    };
 };
 
 exports.calculateRental = async (data) => {
@@ -600,4 +730,42 @@ exports.calculateRental = async (data) => {
             status
         }
     };
+};
+
+/**
+ * 🟡 ADD NEW MOULD (General Inventory)
+ * Based on user requested structure
+ */
+exports.addNewMould = async (data) => {
+    const now = nowIST();
+    const docRef = db.collection(MOULDS).doc();
+
+    const mouldData = {
+        id: docRef.id,
+        mouldId: data.mouldId || `MLD-${Date.now()}`,
+        mouldName: data.mouldName || "",
+        specifications: {
+            dimensions: {
+                length: data.dimensions?.length || "0",
+                width: data.dimensions?.width || "0",
+                height: data.dimensions?.height || "0"
+            },
+            location: data.location || "",
+            materialType: data.materialType || "Steel" // Steel / Aluminium / Composite / Wood
+        },
+        inventory: {
+            stockUnits: Number(data.stockUnits || 0),
+            unitPrice: Number(data.unitPrice || 0)
+        },
+        createdAt: now,
+        updatedAt: now
+    };
+
+    await docRef.set(mouldData);
+    return mouldData;
+};
+
+exports.getAllMoulds = async () => {
+    const snapshot = await db.collection(MOULDS).get();
+    return snapshot.docs.map(doc => doc.data());
 };

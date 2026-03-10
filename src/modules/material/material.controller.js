@@ -1,68 +1,97 @@
 const materialService = require("./material.service");
-const { validationResult } = require("express-validator");
 
-const checkValidation = (req) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-        const err = new Error("Validation failed");
-        err.statusCode = 400;
-        err.data = errors.array();
-        throw err;
+// --- Material Master --- //
+exports.createMaterial = async (req, res, next) => {
+    try {
+        const result = await materialService.createMaterial(req.body);
+        res.status(201).json({ success: true, data: result });
+    } catch (error) {
+        res.status(400).json({ success: false, message: error.message });
     }
 };
 
-exports.createMaterial = async (req, res, next) => {
+exports.getMaterials = async (req, res, next) => {
     try {
-        checkValidation(req);
-        const material = await materialService.createMaterial(req.body);
-        res.status(201).json({ success: true, data: material });
-    } catch (error) { next(error); }
+        const result = await materialService.getMaterials();
+        res.status(200).json({ success: true, data: result });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
 };
 
-exports.getAllMaterials = async (req, res, next) => {
+// --- Material Received --- //
+exports.recordMaterialReceived = async (req, res, next) => {
     try {
-        const materials = await materialService.getAllMaterials();
-        res.status(200).json({ success: true, data: materials });
-    } catch (error) { next(error); }
+        const result = await materialService.recordMaterialReceived(req.body);
+        res.status(201).json({ success: true, data: result });
+    } catch (error) {
+        res.status(400).json({ success: false, message: error.message });
+    }
 };
 
-exports.getMaterialById = async (req, res, next) => {
+exports.getMaterialReceived = async (req, res, next) => {
     try {
-        const material = await materialService.getMaterialById(req.params.id);
-        res.status(200).json({ success: true, data: material });
-    } catch (error) { next(error); }
+        const { projectNo } = req.query;
+        const result = await materialService.getMaterialReceived(projectNo);
+        res.status(200).json({ success: true, data: result });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
 };
 
-exports.updateMaterial = async (req, res, next) => {
+exports.updateReceiptPayment = async (req, res, next) => {
     try {
-        const material = await materialService.updateMaterial(req.params.id, req.body);
-        res.status(200).json({ success: true, data: material });
-    } catch (error) { next(error); }
+        const result = await materialService.updateReceiptPayment(req.params.receiptId, req.body);
+        res.status(200).json({ success: true, data: result });
+    } catch (error) {
+        res.status(400).json({ success: false, message: error.message });
+    }
 };
 
-exports.deleteMaterial = async (req, res, next) => {
+// --- Material Used --- //
+exports.recordMaterialUsed = async (req, res, next) => {
     try {
-        await materialService.deleteMaterial(req.params.id);
-        res.status(200).json({ success: true, message: "Material deleted" });
-    } catch (error) { next(error); }
+        const result = await materialService.recordMaterialUsed(req.body);
+        res.status(201).json({ success: true, data: result });
+    } catch (error) {
+        res.status(400).json({ success: false, message: error.message });
+    }
 };
 
-exports.dealerPurchase = async (req, res, next) => {
+// --- Material Stock --- //
+exports.getMaterialStock = async (req, res, next) => {
     try {
-        checkValidation(req);
-        const material = await materialService.dealerPurchase(req.params.id, req.body);
-        res.status(200).json({ success: true, data: material });
-    } catch (error) { next(error); }
+        const { projectNo } = req.query;
+        const result = await materialService.getMaterialStock(projectNo);
+        res.status(200).json({ success: true, data: result });
+    } catch (error) {
+        res.status(400).json({ success: false, message: error.message });
+    }
 };
 
-exports.dealerPayment = async (req, res, next) => {
+exports.addMaterialRequired = async (req, res, next) => {
     try {
-        checkValidation(req);
-        const material = await materialService.dealerPayment(
-            req.params.materialId,
-            req.params.dealerId,
-            req.body
-        );
-        res.status(200).json({ success: true, data: material });
-    } catch (error) { next(error); }
+        const result = await materialService.addMaterialRequired(req.body);
+        res.status(201).json({ message: "Material Required Added", id: result.id, data: result });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+exports.updateMaterialRequired = async (req, res, next) => {
+    try {
+        const result = await materialService.updateMaterialRequired(req.params.id, req.body);
+        res.status(200).json({ message: "Material Required Updated", data: result });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+exports.getMaterialRequired = async (req, res, next) => {
+    try {
+        const result = await materialService.getMaterialRequired(req.params.projectNo);
+        res.status(200).json(result);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 };
