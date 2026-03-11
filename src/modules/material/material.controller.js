@@ -39,6 +39,16 @@ exports.getMaterialReceived = async (req, res, next) => {
     }
 };
 
+exports.getMaterialReceivedByMaterialId = async (req, res, next) => {
+    try {
+        const result = await materialService.getMaterialReceivedByMaterialId(req.params.materialId);
+        res.status(200).json({ success: true, data: result });
+    } catch (error) {
+        res.status(404).json({ success: false, message: error.message });
+    }
+};
+
+
 exports.updateReceiptPayment = async (req, res, next) => {
     try {
         const result = await materialService.updateReceiptPayment(req.params.receiptId, req.body);
@@ -58,16 +68,31 @@ exports.recordMaterialUsed = async (req, res, next) => {
     }
 };
 
+exports.getAllMaterialUsed = async (req, res, next) => {
+    try {
+        const { projectNo } = req.params;
+        const snap = require("../../config/firebase").db.collection("materialUsed");
+        const query = projectNo ? snap.where("projectNo", "==", projectNo) : snap;
+        const result = await query.get();
+        const data = result.docs.map(doc => ({ usageId: doc.id, ...doc.data() }));
+        res.status(200).json({ success: true, data });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+
 // --- Material Stock --- //
 exports.getMaterialStock = async (req, res, next) => {
     try {
-        const { projectNo } = req.query;
+        const { projectNo } = req.params;
         const result = await materialService.getMaterialStock(projectNo);
         res.status(200).json({ success: true, data: result });
     } catch (error) {
         res.status(400).json({ success: false, message: error.message });
     }
 };
+
 
 exports.addMaterialRequired = async (req, res, next) => {
     try {
@@ -90,8 +115,17 @@ exports.updateMaterialRequired = async (req, res, next) => {
 exports.getMaterialRequired = async (req, res, next) => {
     try {
         const result = await materialService.getMaterialRequired(req.params.projectNo);
-        res.status(200).json(result);
+        res.status(200).json({ success: true, data: result });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ success: false, message: error.message });
     }
 };
+
+exports.getAllMaterialRequired = async (req, res, next) => {
+    try {
+        const result = await materialService.getAllMaterialRequired();
+        res.status(200).json({ success: true, data: result });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};

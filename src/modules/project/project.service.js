@@ -7,6 +7,7 @@ const worksCollection = db.collection("works");
 const materialReceivedCollection = db.collection("materialReceived");
 const materialUsedCollection = db.collection("materialUsed");
 const siteExpensesCollection = db.collection("siteExpenses");
+const advancesCollection = db.collection("advances");
 
 exports.createProject = async (projectData) => {
     // Generate an automatic projectNo if not provided, or expect it
@@ -74,10 +75,12 @@ exports.deleteProject = async (projectNo) => {
 };
 
 exports.getProjectSummary = async (projectNo) => {
-    const project = await this.getProjectByNo(projectNo);
-    if (!project) {
+    const docRef = projectsCollection.doc(projectNo);
+    const doc = await docRef.get();
+    if (!doc.exists) {
         throw new Error("Project not found");
     }
+    const project = doc.data();
 
     // Materials Received
     const receivedSnap = await materialReceivedCollection.where("projectNo", "==", projectNo).get();
@@ -116,7 +119,6 @@ exports.getProjectSummary = async (projectNo) => {
     });
 
     // Financial - Advances
-    const advancesCollection = db.collection("advances");
     const advancesSnap = await advancesCollection.where("projectNo", "==", projectNo).get();
     let dynamicAdvancedPaid = 0;
     advancesSnap.forEach(doc => {

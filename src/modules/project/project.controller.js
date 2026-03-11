@@ -68,8 +68,8 @@ exports.getWorkHistory = async (req, res) => {
         const usedRef = db.collection("materialUsed").where("projectNo", "==", projectNo);
         const advanceRef = db.collection("advances").where("projectNo", "==", projectNo);
         const expenseRef = db.collection("siteExpenses").where("projectNo", "==", projectNo);
-        // User's addMaterialRequired uses the "materialRequired" collection for storing the plans/requirements
         const requiredRef = db.collection("materialRequired").where("projectNo", "==", projectNo);
+        const stockRef = db.collection("stock").where("projectNo", "==", projectNo);
 
         const [
             projectSnap,
@@ -78,7 +78,8 @@ exports.getWorkHistory = async (req, res) => {
             usedSnap,
             advanceSnap,
             expenseSnap,
-            requiredSnap
+            requiredSnap,
+            stockSnap
         ] = await Promise.all([
             projectRef.get(),
             worksRef.get(),
@@ -86,7 +87,8 @@ exports.getWorkHistory = async (req, res) => {
             usedRef.get(),
             advanceRef.get(),
             expenseRef.get(),
-            requiredRef.get()
+            requiredRef.get(),
+            stockRef.get()
         ]);
 
         // 2️⃣ Convert to array
@@ -97,40 +99,10 @@ exports.getWorkHistory = async (req, res) => {
         const advances = advanceSnap.docs.map(doc => doc.data());
         const expenses = expenseSnap.docs.map(doc => doc.data());
         const requiredPlans = requiredSnap.docs.map(doc => doc.data());
+        const stock = stockSnap.docs.map(doc => doc.data());
 
-        // 3️⃣ STOCK LOGIC
-        const stockMap = {};
-
-        received.forEach(item => {
-            if (!stockMap[item.materialId]) {
-                stockMap[item.materialId] = {
-                    materialId: item.materialId,
-                    materialName: item.materialName,
-                    received: 0,
-                    used: 0
-                };
-            }
-            stockMap[item.materialId].received += Number(item.quantity) || 0;
-        });
-
-        used.forEach(item => {
-            if (!stockMap[item.materialId]) {
-                stockMap[item.materialId] = {
-                    materialId: item.materialId,
-                    materialName: item.materialName,
-                    received: 0,
-                    used: 0
-                };
-            }
-
-            stockMap[item.materialId].used += item.quantityUsed;
-        });
-
-        const stock = Object.values(stockMap).map(item => ({
-            ...item,
-            stock: item.received - item.used
-        }));
-
+        // 3️⃣ STOCK (Now fetched directly from DB)
+        // (Replaced prior logic with a direct read)
 
         // 4️⃣ MATERIAL REQUIRED
         const materialRequired = requiredPlans.map(plan => {

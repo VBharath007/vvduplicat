@@ -2,8 +2,11 @@ const { db } = require("../../config/firebase");
 
 const materialsCollection = db.collection("materials");
 const materialReceivedCollection = db.collection("materialReceived");
-const materialUsedCollection = db.collection("materialUsed");
 
+const materialUsedCollection = db.collection("materialUsed");
+const stockCollection = db.collection("stock");
+const materialRequiredCollection = db.collection("materialRequired");
+const materialPlanCollection = db.collection("materialPlan");
 // --- Material Master --- //
 exports.createMaterial = async (materialData) => {
     if (!materialData.materialId) {
@@ -32,6 +35,24 @@ exports.recordMaterialReceived = async (receivedData) => {
     if (!receivedData.projectNo || !receivedData.materialId) {
         throw new Error("projectNo and materialId are required");
     }
+    if (!receivedData.materialName) {
+        throw new Error("materialName is required");
+    }
+
+    // --- Validate: materialId must always refer to the same materialName ---
+    const stockId = `${receivedData.projectNo}_${receivedData.materialId}`;
+    const stockRef = stockCollection.doc(stockId);
+    const stockDoc = await stockRef.get();
+
+    if (stockDoc.exists) {
+        const existingMaterialName = stockDoc.data().materialName;
+        if (existingMaterialName.toLowerCase() !== receivedData.materialName.toLowerCase()) {
+            throw new Error(
+                `You already purchased material ID '${receivedData.materialId}' with name '${existingMaterialName}'. To purchase '${receivedData.materialName}', please use a different material ID (e.g., MAT002).`
+            );
+        }
+    }
+
     receivedData.createdAt = new Date().toISOString();
 
     // Ensure numeric calculations
@@ -41,8 +62,30 @@ exports.recordMaterialReceived = async (receivedData) => {
     receivedData.paidAmount = Number(receivedData.paidAmount) || 0;
 
     const docRef = await materialReceivedCollection.add(receivedData);
+
+    // --- Update Stock ---
+    const qty = quantity;
+
+    if (stockDoc.exists) {
+        const currentStock = stockDoc.data();
+        await stockRef.update({
+            receivedQuantity: (currentStock.receivedQuantity || 0) + qty,
+            stock: (currentStock.stock || 0) + qty
+        });
+    } else {
+        await stockRef.set({
+            projectNo: receivedData.projectNo,
+            materialId: receivedData.materialId,
+            materialName: receivedData.materialName,
+            receivedQuantity: qty,
+            usedQuantity: 0,
+            stock: qty
+        });
+    }
+
     return { receiptId: docRef.id, ...receivedData };
 };
+
 
 exports.getMaterialReceived = async (projectNo) => {
     let query = materialReceivedCollection;
@@ -56,6 +99,17 @@ exports.getMaterialReceived = async (projectNo) => {
     });
     return received;
 };
+
+exports.getMaterialReceivedByMaterialId = async (materialId) => {
+    const snapshot = await materialReceivedCollection
+        .where("materialId", "==", materialId)
+        .get();
+    if (snapshot.empty) {
+        throw new Error(`No received records found for material ID '${materialId}'`);
+    }
+    return snapshot.docs.map(doc => ({ receiptId: doc.id, ...doc.data() }));
+};
+
 
 exports.updateReceiptPayment = async (receiptId, paymentData) => {
     const docRef = materialReceivedCollection.doc(receiptId);
@@ -81,86 +135,124 @@ exports.recordMaterialUsed = async (usedData) => {
     if (!usedData.projectNo || !usedData.materialId) {
         throw new Error("projectNo and materialId are required");
     }
+
+    const qtyUsed = Number(usedData.quantityUsed) || 0;
+    if (qtyUsed <= 0) {
+        throw new Error("quantityUsed must be a positive number");
+    }
+
+    // --- Validate: material must have been purchased/received first ---
+    const stockId = `${usedData.projectNo}_${usedData.materialId}`;
+    const stockRef = stockCollection.doc(stockId);
+    const stockDoc = await stockRef.get();
+
+    if (!stockDoc.exists) {
+        throw new Error(
+            `Material '${usedData.materialId}' has not been purchased/received for project '${usedData.projectNo}'. Please receive the material first.`
+        );
+    }
+
+    const currentStock = stockDoc.data();
+
+    // --- Validate: materialName must match the purchased material ---
+    if (usedData.materialName &&
+        currentStock.materialName.toLowerCase() !== usedData.materialName.toLowerCase()) {
+        throw new Error(
+            `Material ID '${usedData.materialId}' was purchased as '${currentStock.materialName}', not '${usedData.materialName}'. Please use the correct material name.`
+        );
+    }
+
+    const availableStock = Number(currentStock.stock) || 0;
+
+    // --- Validate: cannot use more than available stock ---
+    if (qtyUsed > availableStock) {
+        throw new Error(
+            `Insufficient stock. Available: ${availableStock}, Requested: ${qtyUsed}. Please receive more material first.`
+        );
+    }
+
+
     usedData.usedDate = usedData.usedDate || new Date().toISOString();
 
     const docRef = await materialUsedCollection.add(usedData);
+
+    // --- Update Stock ---
+    await stockRef.update({
+        usedQuantity: (currentStock.usedQuantity || 0) + qtyUsed,
+        stock: availableStock - qtyUsed
+    });
+
     return { usageId: docRef.id, ...usedData };
 };
 
 // --- Material Stock --- //
 exports.getMaterialStock = async (projectNo) => {
-    if (!projectNo) {
-        throw new Error("projectNo is required to calculate stock");
+    let snap;
+    if (projectNo) {
+        snap = await stockCollection.where("projectNo", "==", projectNo).get();
+    } else {
+        snap = await stockCollection.get();
     }
-
-    const receivedSnap = await materialReceivedCollection.where("projectNo", "==", projectNo).get();
-    const usedSnap = await materialUsedCollection.where("projectNo", "==", projectNo).get();
-
-    const stockMap = {};
-
-    receivedSnap.forEach(doc => {
-        const data = doc.data();
-        if (!stockMap[data.materialId]) {
-            stockMap[data.materialId] = { materialName: data.materialName, receivedQuantity: 0, usedQuantity: 0 };
-        }
-        stockMap[data.materialId].receivedQuantity += Number(data.quantity) || 0;
-    });
-
-    usedSnap.forEach(doc => {
-        const data = doc.data();
-        if (!stockMap[data.materialId]) {
-            stockMap[data.materialId] = { materialName: data.materialName, receivedQuantity: 0, usedQuantity: 0 };
-        }
-        stockMap[data.materialId].usedQuantity += Number(data.quantityUsed) || 0;
-    });
-
-    return Object.values(stockMap).map(m => ({
-        materialName: m.materialName,
-        receivedQuantity: m.receivedQuantity,
-        usedQuantity: m.usedQuantity,
-        stock: m.receivedQuantity - m.usedQuantity
-    }));
+    return snap.docs.map(doc => doc.data());
 };
 
 // --- Material Required --- //
 exports.addMaterialRequired = async (data) => {
+    if (!data.projectNo || !data.materialId) {
+        throw new Error("projectNo and materialId are required");
+    }
+    if (!data.materialName) {
+        throw new Error("materialName is required");
+    }
+
+    // --- Validate: materialId must refer to the correct materialName ---
+    if (data.projectNo) {
+        const stockId = `${data.projectNo}_${data.materialId}`;
+        const stockDoc = await stockCollection.doc(stockId).get();
+
+        if (stockDoc.exists) {
+            const existingName = stockDoc.data().materialName;
+            if (existingName.toLowerCase() !== data.materialName.toLowerCase()) {
+                throw new Error(
+                    `Material ID '${data.materialId}' is already registered as '${existingName}'. You can only request '${existingName}' for this material ID.`
+                );
+            }
+        }
+    }
+
     data.createdAt = new Date().toISOString();
-    const docRef = await db.collection("materialRequired").add(data);
+    const docRef = await materialRequiredCollection.add(data);
     return { id: docRef.id, ...data };
 };
 
+
 exports.updateMaterialRequired = async (id, data) => {
-    await db.collection("materialRequired").doc(id).update(data);
+    await materialRequiredCollection.doc(id).update(data);
     return { id, ...data };
 };
 
+exports.getAllMaterialRequired = async () => {
+    const snap = await materialRequiredCollection.get();
+    return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+};
+
 exports.getMaterialRequired = async (projectNo) => {
-    const planSnap = await db.collection("materialPlan")
+
+    const planSnap = await materialPlanCollection
         .where("projectNo", "==", projectNo)
         .get();
 
-    const receivedSnap = await materialReceivedCollection
-        .where("projectNo", "==", projectNo)
-        .get();
-
-    const usedSnap = await materialUsedCollection
+    const stockSnap = await stockCollection
         .where("projectNo", "==", projectNo)
         .get();
 
     const plans = planSnap.docs.map(doc => doc.data());
-    const received = receivedSnap.docs.map(doc => doc.data());
-    const used = usedSnap.docs.map(doc => doc.data());
+    const stocks = stockSnap.docs.map(doc => doc.data());
 
     const result = plans.map(plan => {
-        const totalReceived = received
-            .filter(r => r.materialId === plan.materialId)
-            .reduce((sum, r) => sum + (Number(r.quantity) || 0), 0);
+        const stockItem = stocks.find(s => s.materialId === plan.materialId);
+        const stock = stockItem ? stockItem.stock : 0;
 
-        const totalUsed = used
-            .filter(u => u.materialId === plan.materialId)
-            .reduce((sum, u) => sum + (Number(u.quantityUsed) || 0), 0);
-
-        const stock = totalReceived - totalUsed;
         const plannedQuantity = Number(plan.plannedQuantity) || 0;
         const required = plannedQuantity - stock;
 
