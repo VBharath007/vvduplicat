@@ -205,25 +205,81 @@ exports.addMaterialRequired = async (data) => {
         throw new Error("materialName is required");
     }
 
-    // --- Validate: materialId must refer to the correct materialName ---
-    if (data.projectNo) {
-        const stockId = `${data.projectNo}_${data.materialId}`;
-        const stockDoc = await stockCollection.doc(stockId).get();
+    const qty = Number(data.requiredQuantity) || 0;
+    if (qty <= 0) {
+        throw new Error("requiredQuantity must be a positive number");
+    }
 
-        if (stockDoc.exists) {
-            const existingName = stockDoc.data().materialName;
-            if (existingName.toLowerCase() !== data.materialName.toLowerCase()) {
-                throw new Error(
-                    `Material ID '${data.materialId}' is already registered as '${existingName}'. You can only request '${existingName}' for this material ID.`
-                );
-            }
+    // --- Validate: materialId must refer to the correct materialName if stock exists ---
+    const stockId = `${data.projectNo}_${data.materialId}`;
+    const stockRef = stockCollection.doc(stockId);
+    const stockDoc = await stockRef.get();
+
+    if (stockDoc.exists) {
+        const existingName = stockDoc.data().materialName;
+        if (existingName.toLowerCase() !== data.materialName.toLowerCase()) {
+            throw new Error(
+                `Material ID '${data.materialId}' is already registered as '${existingName}'. You can only request '${existingName}' for this material ID.`
+            );
         }
     }
 
-    data.createdAt = new Date().toISOString();
-    const docRef = await materialRequiredCollection.add(data);
-    return { id: docRef.id, ...data };
+    // --- Upsert materialRequired: one record per projectNo + materialId ---
+    const existingSnap = await materialRequiredCollection
+        .where("projectNo", "==", data.projectNo)
+        .where("materialId", "==", data.materialId)
+        .get();
+
+    let requiredDocId;
+    let newRequiredQuantity;
+
+    if (!existingSnap.empty) {
+        // Update existing record — add quantity
+        const existingDoc = existingSnap.docs[0];
+        const currentQty = Number(existingDoc.data().requiredQuantity) || 0;
+        newRequiredQuantity = currentQty + qty;
+
+        await existingDoc.ref.update({
+            requiredQuantity: newRequiredQuantity,
+            updatedAt: new Date().toISOString()
+        });
+        requiredDocId = existingDoc.id;
+    } else {
+        // Create new record
+        newRequiredQuantity = qty;
+        data.createdAt = new Date().toISOString();
+        data.requiredQuantity = qty;
+        const docRef = await materialRequiredCollection.add(data);
+        requiredDocId = docRef.id;
+    }
+
+    // --- Update Stock: required qty counts as incoming (like received) ---
+    if (stockDoc.exists) {
+        const current = stockDoc.data();
+        await stockRef.update({
+            receivedQuantity: (current.receivedQuantity || 0) + qty,
+            stock: (current.stock || 0) + qty
+        });
+    } else {
+        await stockRef.set({
+            projectNo: data.projectNo,
+            materialId: data.materialId,
+            materialName: data.materialName,
+            receivedQuantity: qty,
+            usedQuantity: 0,
+            stock: qty
+        });
+    }
+
+    return {
+        id: requiredDocId,
+        projectNo: data.projectNo,
+        materialId: data.materialId,
+        materialName: data.materialName,
+        requiredQuantity: newRequiredQuantity
+    };
 };
+
 
 
 exports.updateMaterialRequired = async (id, data) => {
