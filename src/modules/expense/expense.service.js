@@ -27,6 +27,7 @@ exports.createExpense = async (expenseData) => {
     return { expenseId: docRef.id, ...expenseData };
 };
 
+
 exports.getExpenses = async (projectNo) => {
     let query = siteExpensesCollection;
     if (projectNo) {
@@ -39,22 +40,17 @@ exports.getExpenses = async (projectNo) => {
     snapshot.forEach((doc) => {
         const data = doc.data();
         const amount = Number(data.amount) || 0;
-        const pastExpense = Number(data.pastExpense) || 0;
+        totalProjectExpense += amount;
 
-        // Current overall total for this record (add add)
-        const rowTotal = amount + pastExpense;
-        
-        totalProjectExpense += amount; // Sum only current to avoid double counting
-
-        expenses.push({ 
-            expenseId: doc.id, 
+        expenses.push({
+            expenseId: doc.id,
             ...data,
-            rowTotal: rowTotal // show as overall/total for this record
+            // Map fields to match Flutter's FinancialHistoryScreen requirements
+            amountReceived: amount,
+            remark: data.remark || data.particular || "Site Expense",
+            date: data.date || data.createdAt?.split('T')[0]
         });
     });
-    
-    return { 
-        expenses, 
-        totalExpense: totalProjectExpense 
-    };
+
+    return { expenses, totalExpense: totalProjectExpense };
 };

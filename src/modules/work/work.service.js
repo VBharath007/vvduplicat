@@ -19,17 +19,16 @@ exports.createWork = async (workData) => {
     const workDate = workData.date || new Date().toISOString().split("T")[0];
     workData.date = workDate;
 
-    // Normalise incoming work name
-    const incomingWorkName = (workData.work || workData.workName || "").trim();
+    // Normalize and ensure both 'work' and 'workName' exist for the Frontend
+    const name = (workData.work || workData.workName || "General Work").trim();
+    workData.work = name;
+    workData.workName = name;
 
-    // --- EDIT FLOW: workId supplied → direct overwrite, never create new ---
+    // --- EDIT FLOW: workId supplied → direct overwrite ---
     if (workData.workId) {
         const docRef = worksCollection.doc(workData.workId);
         const doc = await docRef.get();
-
-        if (!doc.exists) {
-            throw new Error(`Work log '${workData.workId}' not found`);
-        }
+        if (!doc.exists) throw new Error(`Work log '${workData.workId}' not found`);
 
         const updatePayload = { ...workData };
         delete updatePayload.workId;
@@ -43,35 +42,28 @@ exports.createWork = async (workData) => {
     }
 
     // --- UPSERT FLOW ---
-    // Same workName + same date → update that document.
-    // Different workName (or no name) → create new document.
-    if (incomingWorkName) {
-        const existingSnapshot = await worksCollection
-            .where("projectNo", "==", workData.projectNo)
-            .where("date", "==", workDate)
-            .where("work", "==", incomingWorkName)
-            .limit(1)
-            .get();
+    const existingSnapshot = await worksCollection
+        .where("projectNo", "==", workData.projectNo)
+        .where("date", "==", workDate)
+        .where("work", "==", name)
+        .limit(1)
+        .get();
 
-        if (!existingSnapshot.empty) {
-            const existingDoc = existingSnapshot.docs[0];
-            const updatePayload = { ...workData };
-            delete updatePayload.createdAt;
-            updatePayload.updatedAt = new Date().toISOString();
-            if (updatePayload.labour != null) updatePayload.labour = String(updatePayload.labour);
+    if (!existingSnapshot.empty) {
+        const existingDoc = existingSnapshot.docs[0];
+        const updatePayload = { ...workData };
+        delete updatePayload.createdAt;
+        updatePayload.updatedAt = new Date().toISOString();
+        if (updatePayload.labour != null) updatePayload.labour = String(updatePayload.labour);
 
-            await existingDoc.ref.update(updatePayload);
-            const updated = await existingDoc.ref.get();
-            return { workId: updated.id, ...updated.data() };
-        }
+        await existingDoc.ref.update(updatePayload);
+        const updated = await existingDoc.ref.get();
+        return { workId: updated.id, ...updated.data() };
     }
 
-    // Truly new entry — different work name or no existing match
+    // Truly new entry
     workData.createdAt = new Date().toISOString();
-
-    if (workData.labour != null) {
-        workData.labour = String(workData.labour);
-    }
+    if (workData.labour != null) workData.labour = String(workData.labour);
 
     const docRef = await worksCollection.add(workData);
     return { workId: docRef.id, ...workData };

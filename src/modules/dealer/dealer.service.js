@@ -1,6 +1,7 @@
 const { db } = require("../../config/firebase");
 
 const materialReceivedCollection = db.collection("materialReceived");
+const paymentsCollection = db.collection("dealerPayments");
 
 exports.getDealerHistory = async (phoneNumber) => {
     if (!phoneNumber) {
@@ -160,6 +161,9 @@ exports.getAllDealers = async () => {
     return Object.values(dealerMap);
 };
 
+// dealer.service.js
+// Separate collection
+
 exports.updateDealerPayment = async (phoneNumber, amountPaid) => {
     if (!phoneNumber || !amountPaid || amountPaid <= 0) {
         throw new Error("Valid phone number and positive amountPaid are required");
@@ -169,92 +173,34 @@ exports.updateDealerPayment = async (phoneNumber, amountPaid) => {
         .where("dealerContact", "==", phoneNumber)
         .get();
 
-    if (snapshot.empty) {
-        throw new Error("No dealer found with this phone number");
-    }
-
-    const bills = [];
-    snapshot.forEach(doc => {
-        bills.push({ id: doc.id, ref: doc.ref, data: doc.data() });
+    // 1. Log the transaction in the NEW collection first
+    const paymentRef = paymentsCollection.doc();
+    await paymentRef.set({
+        dealerContact: phoneNumber,
+        amountPaid: Number(amountPaid),
+        date: new Date().toISOString(),
+        type: "Payment"
     });
 
-    // Sort by createdAt (oldest first)
+    // 2. FIFO Logic to clear existing bills (existing logic)
+    const bills = [];
+    snapshot.forEach(doc => bills.push({ id: doc.id, ref: doc.ref, data: doc.data() }));
     bills.sort((a, b) => new Date(a.data.createdAt || 0) - new Date(b.data.createdAt || 0));
 
-    // Calculate total pending amount for this dealer
-    let totalPendingAmount = 0;
-    for (const bill of bills) {
-        const totalAmt = Number(bill.data.totalAmount) || 0;
-        const currentPaidAmt = Number(bill.data.paidAmount) || 0;
-        const pendingAmt = totalAmt - currentPaidAmt;
-        
-        if (pendingAmt > 0) {
-            totalPendingAmount += pendingAmt;
-        }
-    }
-
-    if (totalPendingAmount <= 0) {
-        throw new Error("You have already finished the payment. Payment cancelled.");
-    }
-
-    if (amountPaid > totalPendingAmount) {
-        throw new Error(`Amount paid (${amountPaid}) exceeds the remaining balance (${totalPendingAmount}). Payment cancelled.`);
-    }
-
     let remainingPaymentToApply = Number(amountPaid);
-    const updatedBills = [];
-
     const batch = db.batch();
 
     for (const bill of bills) {
         if (remainingPaymentToApply <= 0) break;
-
-        const totalAmt = Number(bill.data.totalAmount) || 0;
-        const currentPaidAmt = Number(bill.data.paidAmount) || 0;
-        const pendingAmt = totalAmt - currentPaidAmt;
+        const pendingAmt = (Number(bill.data.totalAmount) || 0) - (Number(bill.data.paidAmount) || 0);
 
         if (pendingAmt > 0) {
-            const amountToApplyToThisBill = Math.min(pendingAmt, remainingPaymentToApply);
-            const newPaidAmt = currentPaidAmt + amountToApplyToThisBill;
-            
-            batch.update(bill.ref, { paidAmount: newPaidAmt });
-            remainingPaymentToApply -= amountToApplyToThisBill;
-            
-            updatedBills.push({
-                receiptId: bill.id,
-                appliedAmount: amountToApplyToThisBill,
-                newTotalPaid: newPaidAmt
-            });
+            const apply = Math.min(pendingAmt, remainingPaymentToApply);
+            batch.update(bill.ref, { paidAmount: (Number(bill.data.paidAmount) || 0) + apply });
+            remainingPaymentToApply -= apply;
         }
     }
-
     await batch.commit();
 
-    // After updating, recalculate the entire payment summary for this dealer
-    let newTotalPayment = 0;
-    let newAdvancedPayment = 0;
-
-    // Loop through the original bills and use the updated values if they were just updated
-    for (const bill of bills) {
-        const totalAmt = Number(bill.data.totalAmount) || 0;
-        newTotalPayment += totalAmt;
-        
-        const updatedBillMatch = updatedBills.find(ub => ub.receiptId === bill.id);
-        if (updatedBillMatch) {
-            newAdvancedPayment += updatedBillMatch.newTotalPaid;
-        } else {
-            newAdvancedPayment += (Number(bill.data.paidAmount) || 0);
-        }
-    }
-
-    const newRemainingAmount = newTotalPayment - newAdvancedPayment;
-
-    return {
-        message: "Payment updated successfully",
-        paymentSummary: {
-            totalPayment: newTotalPayment,
-            advancedPayment: newAdvancedPayment,
-            remainingAmount: newRemainingAmount < 0 ? 0 : newRemainingAmount
-        }
-    };
+    return { message: "Payment recorded successfully" };
 };

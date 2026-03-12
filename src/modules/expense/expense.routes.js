@@ -6,7 +6,8 @@ const { authorize } = require("../../middleware/role.middleware");
 
 const isAdmin = [verifyToken, authorize(["admin"])];
 
+// Define parameter route first to avoid 404 collisions
+router.get("/project/:projectNo", isAdmin, expenseController.getExpenses);
 router.post("/", isAdmin, expenseController.createExpense);
-router.get("/", isAdmin, expenseController.getExpenses);
 
 module.exports = router;
