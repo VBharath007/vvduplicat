@@ -19,8 +19,21 @@ router.get("/:projectNo/summary", isAdmin, projectController.getProjectSummary);
 const imageController = require("./image.controller");
 const upload = require("../../middleware/upload.middleware");
 
-router.post("/:projectNo/images", isAdmin, upload.single("image"), imageController.uploadImage);
-router.get("/:projectNo/images", isAdmin, imageController.getProjectImages);
+router.post(
+    "/:projectNo/images",
+    isAdmin,
+    upload.single("image"),
+    imageController.uploadImage
+);
+
+router.get(
+    "/:projectNo/images",
+    isAdmin,
+    imageController.getProjectImages
+);
+
+router.get("/images", isAdmin, imageController.getAllImages); // Fetch all project images
+router.get("/images/:imageId", isAdmin, imageController.getImageById); // Fetch single image metadata
 router.delete("/images/:imageId", isAdmin, imageController.deleteImage);
 
 router.get("/work-history/:projectNo", isAdmin, projectController.getWorkHistory);

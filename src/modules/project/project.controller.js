@@ -127,9 +127,23 @@ exports.getWorkHistory = async (req, res) => {
         });
 
 
-        // 5️⃣ Remaining Balance
-        const totalExpense = expenses.reduce((sum, e) => sum + e.amount, 0);
-        const remainingBalance = 500000 - totalExpense;
+        // 5️⃣ Totals Calculation
+        // Summing only current amounts because 'past' is now used for carry-forward tracking per row
+        const totalAdvance = advances.reduce(
+            (sum, a) => sum + (Number(a.amountReceived) || 0),
+            0
+        );
+        const totalExpense = expenses.reduce(
+            (sum, e) => sum + (Number(e.amount) || 0),
+            0
+        );
+
+        // Fallback for Advance (if no advance records)
+        // If no records, use static field if it exists
+        const staticAdvancedPaid = Number(project?.paymentDetails?.advancedPaid) || 0;
+        const currentTotalAdvance = totalAdvance > 0 ? totalAdvance : staticAdvancedPaid;
+        
+        const remainingBalance = currentTotalAdvance - totalExpense;
 
 
         // 6️⃣ Response
@@ -139,9 +153,11 @@ exports.getWorkHistory = async (req, res) => {
             materialReceived: received,
             materialUsed: used,
             stock,
-            materialRequired,   // ✅ Added
+            materialRequired,
             advanceReceivedHistory: advances,
             siteExpenseHistory: expenses,
+            totalAdvance: currentTotalAdvance,
+            totalExpense,
             remainingBalance
         });
 

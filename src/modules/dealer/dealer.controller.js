@@ -18,6 +18,16 @@ exports.getAllDealers = async (req, res, next) => {
     }
 };
 
+exports.getDealerPaymentHistory = async (req, res, next) => {
+    try {
+        const { phoneNumber } = req.params;
+        const result = await dealerService.getDealerPaymentHistory(phoneNumber);
+        res.status(200).json({ success: true, data: result });
+    } catch (error) {
+        res.status(404).json({ success: false, message: error.message });
+    }
+};
+
 exports.updateDealerPayment = async (req, res, next) => {
     try {
         const { amountPaid } = req.body;

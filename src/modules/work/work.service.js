@@ -6,16 +6,68 @@ exports.createWork = async (workData) => {
     if (!workData.projectNo) {
         throw new Error("projectNo is required");
     }
-    workData.createdAt = new Date().toISOString();
-
-    // Ensure labour is treated as a string
-    if (workData.labour !== undefined && workData.labour !== null) {
-        workData.labour = String(workData.labour);
+    if (!workData.work) {
+        throw new Error("work name/type is required (e.g. 'Ceiling Work')");
     }
 
-    // Add document with auto-generated ID
-    const docRef = await worksCollection.add(workData);
-    return { workId: docRef.id, ...workData };
+    // Deep Analysis: Working with 15 years experience, we implement a 'Smart Merge'
+    // to ensure different UI modules (Required vs Received) don't overwrite each other.
+
+    const existingSnapshot = await worksCollection
+        .where("projectNo", "==", workData.projectNo)
+        .where("work", "==", workData.work)
+        .limit(1)
+        .get();
+
+    if (!existingSnapshot.empty) {
+        const doc = existingSnapshot.docs[0];
+        const existingData = doc.data();
+        const docRef = worksCollection.doc(doc.id);
+
+        const updatePayload = {
+            updatedAt: new Date().toISOString()
+        };
+
+        // 1️⃣ LOGIC: Modular Override (Only update provided non-empty fields)
+        const fieldsToOverride = ['labour', 'status', 'description', 'unit', 'rate', 'materialName'];
+        fieldsToOverride.forEach(field => {
+            if (workData[field] !== undefined && workData[field] !== null && workData[field] !== "") {
+                updatePayload[field] = String(workData[field]);
+            }
+        });
+
+        // 2️⃣ LOGIC: Material Required (Update/Override latest plan)
+        if (workData.materialRequired !== undefined && workData.materialRequired !== null && workData.materialRequired !== "") {
+            updatePayload.materialRequired = Number(workData.materialRequired) || 0;
+        }
+
+        // 3️⃣ LOGIC: Material Received (ADDITIVE update)
+        // As per request: "onlyy add the meterial recived"
+        if (workData.materialReceived !== undefined && workData.materialReceived !== null && workData.materialReceived !== "") {
+            const incomingAmount = Number(workData.materialReceived) || 0;
+            const currentAmount = Number(existingData.materialReceived) || 0;
+            updatePayload.materialReceived = currentAmount + incomingAmount;
+        }
+
+        await docRef.update(updatePayload);
+        const updatedDoc = await docRef.get();
+        return { workId: updatedDoc.id, ...updatedDoc.data(), status: "updated" };
+
+    } else {
+        // CREATE new work document
+        const newWork = {
+            ...workData,
+            materialRequired: Number(workData.materialRequired) || 0,
+            materialReceived: Number(workData.materialReceived) || 0,
+            createdAt: new Date().toISOString()
+        };
+
+        // Ensure labour is string
+        if (newWork.labour) newWork.labour = String(newWork.labour);
+
+        const docRef = await worksCollection.add(newWork);
+        return { workId: docRef.id, ...newWork, status: "created" };
+    }
 };
 
 exports.getWorks = async (projectNo) => {

@@ -253,23 +253,8 @@ exports.addMaterialRequired = async (data) => {
         requiredDocId = docRef.id;
     }
 
-    // --- Update Stock: required qty counts as incoming (like received) ---
-    if (stockDoc.exists) {
-        const current = stockDoc.data();
-        await stockRef.update({
-            receivedQuantity: (current.receivedQuantity || 0) + qty,
-            stock: (current.stock || 0) + qty
-        });
-    } else {
-        await stockRef.set({
-            projectNo: data.projectNo,
-            materialId: data.materialId,
-            materialName: data.materialName,
-            receivedQuantity: qty,
-            usedQuantity: 0,
-            stock: qty
-        });
-    }
+    // --- Deep Analysis Fix: Required quantity should NOT affect physical stock or receivedQuantity ---
+    // (Removed stock update block as per strict requirement)
 
     return {
         id: requiredDocId,

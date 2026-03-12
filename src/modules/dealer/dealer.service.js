@@ -61,6 +61,62 @@ exports.getDealerHistory = async (phoneNumber) => {
     };
 };
 
+exports.getDealerPaymentHistory = async (phoneNumber) => {
+    if (!phoneNumber) {
+        throw new Error("Phone number is required");
+    }
+
+    const snapshot = await materialReceivedCollection.where("dealerContact", "==", phoneNumber).get();
+
+    if (snapshot.empty) {
+        throw new Error("No transactions found for this dealer phone number");
+    }
+
+    let dealerName = "";
+    const paymentHistory = [];
+    let totalBilled = 0;
+    let totalPaid = 0;
+
+    snapshot.forEach(doc => {
+        const data = doc.data();
+        if (!dealerName && data.dealerName) {
+            dealerName = data.dealerName;
+        }
+
+        const totalAmt = Number(data.totalAmount) || 0;
+        const paidAmt = Number(data.paidAmount) || 0;
+        const balance = totalAmt - paidAmt;
+
+        paymentHistory.push({
+            receiptId: doc.id,
+            projectNo: data.projectNo,
+            materialId: data.materialId,
+            materialName: data.materialName,
+            billDate: data.createdAt,
+            totalAmount: totalAmt,
+            paidAmount: paidAmt,
+            balance: balance,
+            status: balance <= 0 ? "Fully Paid" : (paidAmt > 0 ? "Partially Paid" : "Pending")
+        });
+
+        totalBilled += totalAmt;
+        totalPaid += paidAmt;
+    });
+
+    return {
+        dealerDetails: {
+            dealerName,
+            phoneNumber
+        },
+        paymentHistory,
+        summary: {
+            totalBilled,
+            totalPaid,
+            totalBalance: totalBilled - totalPaid
+        }
+    };
+};
+
 exports.getAllDealers = async () => {
     const snapshot = await materialReceivedCollection.get();
 
