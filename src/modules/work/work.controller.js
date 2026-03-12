@@ -3,7 +3,7 @@ const workService = require("./work.service");
 exports.createWork = async (req, res, next) => {
     try {
         const result = await workService.createWork(req.body);
-        res.status(201).json({ success: true, data: result });
+        res.status(200).json({ success: true, data: result });
     } catch (error) {
         res.status(400).json({ success: false, message: error.message });
     }
@@ -46,4 +46,19 @@ exports.deleteWork = async (req, res, next) => {
     }
 };
 
-
+/**
+ * GET /works/by-date?projectNo=PRO001&date=2026-03-12
+ * Returns the single work document for that project+date, or null.
+ */
+exports.getWorkByDate = async (req, res, next) => {
+    try {
+        const { projectNo, date } = req.query;
+        if (!projectNo || !date) {
+            return res.status(400).json({ success: false, message: "projectNo and date are required" });
+        }
+        const result = await workService.getWorkByDate(projectNo, date);
+        res.status(200).json({ success: true, data: result }); // data is null if not found
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};

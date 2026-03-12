@@ -15,6 +15,8 @@ module.exports = {
     MATERIAL_STOCK: "material_stock",
     ADVANCES: "advances",
     SITE_EXPENSES: "site_expenses",
+    approvalAdvances: "approval_advances",
+    approvalExpenses: "approval_expenses",
     MATERIAL_LEDGER: "material_ledger",
 
 };
