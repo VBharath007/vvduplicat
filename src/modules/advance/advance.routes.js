@@ -8,5 +8,8 @@ const isAdmin = [verifyToken, authorize(["admin"])];
 
 router.post("/", isAdmin, advanceController.createAdvance);
 router.get("/", isAdmin, advanceController.getAdvances);
+router.get("/project/:projectNo", isAdmin, advanceController.getAdvances);
+router.put("/:id", isAdmin, advanceController.updateAdvance);
+router.delete("/:id", isAdmin, advanceController.deleteAdvance);
 
 module.exports = router;

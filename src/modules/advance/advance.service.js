@@ -59,3 +59,30 @@ exports.getAdvances = async (projectNo) => {
         totalAdvance: totalProjectAmount
     };
 };
+
+exports.updateAdvance = async (id, updateData) => {
+    const docRef = advancesCollection.doc(id);
+    const doc = await docRef.get();
+    if (!doc.exists) {
+        throw new Error("Advance record not found");
+    }
+
+    // Clean data
+    if (updateData.amountReceived !== undefined) updateData.amountReceived = Number(updateData.amountReceived);
+    delete updateData.advanceId;
+    delete updateData.createdAt;
+
+    await docRef.update(updateData);
+    const updatedDoc = await docRef.get();
+    return { advanceId: id, ...updatedDoc.data() };
+};
+
+exports.deleteAdvance = async (id) => {
+    const docRef = advancesCollection.doc(id);
+    const doc = await docRef.get();
+    if (!doc.exists) {
+        throw new Error("Advance record not found");
+    }
+    await docRef.delete();
+    return { message: "Advance record deleted successfully" };
+};

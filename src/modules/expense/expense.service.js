@@ -1,6 +1,7 @@
 const { db } = require("../../config/firebase");
 
 const siteExpensesCollection = db.collection("siteExpenses");
+const advancesCollection = db.collection("advances");
 
 exports.createExpense = async (expenseData) => {
     if (!expenseData.projectNo) {
@@ -11,17 +12,15 @@ exports.createExpense = async (expenseData) => {
     expenseData.createdAt = new Date().toISOString();
     expenseData.amount = Number(expenseData.amount) || 0;
 
-    // Automatically calculate pastExpense from previous entries if not provided
-    if (expenseData.pastExpense === undefined || expenseData.pastExpense === null) {
-        const snapshot = await siteExpensesCollection.where("projectNo", "==", expenseData.projectNo).get();
-        let totalPrevious = 0;
-        snapshot.forEach(doc => {
-            totalPrevious += (Number(doc.data().amount) || 0);
-        });
-        expenseData.pastExpense = totalPrevious;
-    } else {
-        expenseData.pastExpense = Number(expenseData.pastExpense) || 0;
-    }
+    // ALWAYS recalculate pastExpense from DB — never trust the client value.
+    const snapshot = await siteExpensesCollection
+        .where("projectNo", "==", expenseData.projectNo)
+        .get();
+    let totalPrevious = 0;
+    snapshot.forEach(doc => {
+        totalPrevious += (Number(doc.data().amount) || 0);
+    });
+    expenseData.pastExpense = totalPrevious;
 
     const docRef = await siteExpensesCollection.add(expenseData);
     return { expenseId: docRef.id, ...expenseData };
@@ -53,4 +52,36 @@ exports.getExpenses = async (projectNo) => {
     });
 
     return { expenses, totalExpense: totalProjectExpense };
+};
+
+exports.updateExpense = async (id, updateData) => {
+    const docRef = siteExpensesCollection.doc(id);
+    const doc = await docRef.get();
+    if (!doc.exists) {
+        throw new Error("Expense record not found");
+    }
+
+    // Clean data
+    if (updateData.amount !== undefined) updateData.amount = Number(updateData.amount);
+    delete updateData.expenseId;
+    delete updateData.createdAt;
+
+    await docRef.update(updateData);
+    const updatedDoc = await docRef.get();
+    return { expenseId: id, ...updatedDoc.data() };
+};
+
+exports.deleteExpense = async (id) => {
+    const docRef = siteExpensesCollection.doc(id);
+    const doc = await docRef.get();
+    if (!doc.exists) {
+        throw new Error("Expense record not found");
+    }
+    await docRef.delete();
+    return { message: "Expense record deleted successfully" };
+};
+
+exports.getFinancialHistory = async (projectNo) => {
+    const projectService = require("../project/project.service");
+    return projectService.getFinancialHistory(projectNo);
 };
