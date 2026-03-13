@@ -11,17 +11,18 @@ exports.createAdvance = async (advanceData) => {
     advanceData.createdAt = new Date().toISOString();
     advanceData.amountReceived = Number(advanceData.amountReceived) || 0;
 
-    // Automatically calculate pastAdvance from previous entries if not provided
-    if (advanceData.pastAdvance === undefined || advanceData.pastAdvance === null) {
-        const snapshot = await advancesCollection.where("projectNo", "==", advanceData.projectNo).get();
-        let totalPrevious = 0;
-        snapshot.forEach(doc => {
-            totalPrevious += (Number(doc.data().amountReceived) || 0);
-        });
-        advanceData.pastAdvance = totalPrevious;
-    } else {
-        advanceData.pastAdvance = Number(advanceData.pastAdvance) || 0;
-    }
+    // ALWAYS recalculate pastAdvance from DB — never trust the client value.
+    // Bug was: client sends pastAdvance:0 explicitly (e.g. copied from a prior
+    // fetched entry), so the old `=== undefined || === null` check was skipped
+    // and 0 was stored as-is even for sno-2, sno-3, etc.
+    const snapshot = await advancesCollection
+        .where("projectNo", "==", advanceData.projectNo)
+        .get();
+    let totalPrevious = 0;
+    snapshot.forEach(doc => {
+        totalPrevious += (Number(doc.data().amountReceived) || 0);
+    });
+    advanceData.pastAdvance = totalPrevious; // sum of ALL prior advances for this project
 
     const docRef = await advancesCollection.add(advanceData);
     return { advanceId: docRef.id, ...advanceData };
@@ -40,21 +41,21 @@ exports.getAdvances = async (projectNo) => {
         const data = doc.data();
         const amountReceived = Number(data.amountReceived) || 0;
         const pastAdvance = Number(data.pastAdvance) || 0;
-        
-        // Per-row overall total (add add)
+
+        // Per-row overall total (cumulative)
         const rowTotal = amountReceived + pastAdvance;
-        
-        totalProjectAmount += amountReceived; // Sum only current to avoid double counting if past is carry-over
-        
-        advances.push({ 
-            advanceId: doc.id, 
+
+        totalProjectAmount += amountReceived; // Sum only current to avoid double counting
+
+        advances.push({
+            advanceId: doc.id,
             ...data,
-            rowTotal: rowTotal // show as overall/total for this record
+            rowTotal: rowTotal
         });
     });
 
-    return { 
-        advances, 
-        totalAdvance: totalProjectAmount // This is the sum of all current entries
+    return {
+        advances,
+        totalAdvance: totalProjectAmount
     };
 };
