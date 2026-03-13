@@ -90,6 +90,24 @@ exports.getAllMaterialUsed = async (req, res, next) => {
     }
 };
 
+exports.updateMaterialUsed = async (req, res, next) => {
+    try {
+        const result = await materialService.updateMaterialUsed(req.params.usageId, req.body);
+        res.status(200).json({ success: true, data: result });
+    } catch (error) {
+        res.status(400).json({ success: false, message: error.message });
+    }
+};
+
+exports.deleteMaterialUsed = async (req, res, next) => {
+    try {
+        const result = await materialService.deleteMaterialUsed(req.params.usageId);
+        res.status(200).json({ success: true, data: result });
+    } catch (error) {
+        res.status(400).json({ success: false, message: error.message });
+    }
+};
+
 
 // --- Material Stock --- //
 exports.getMaterialStock = async (req, res, next) => {
@@ -130,4 +148,4 @@ exports.getAllMaterialRequired = async (req, res, next) => {
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
-};
+};

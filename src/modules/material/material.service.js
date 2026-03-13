@@ -130,7 +130,7 @@ exports.updateMaterialReceived = async (receiptId, updateData) => {
     const existingQty = Number(oldData.quantity) || 0;
     const addedQty = Number(updateData.quantity) || 0; // The NEW quantity being added
     const newQty = existingQty + addedQty; // Sum of old and new
-    
+
     const currentRate = updateData.rate !== undefined ? Number(updateData.rate) : (Number(oldData.rate) || 0);
 
     // Update derived fields
@@ -187,6 +187,27 @@ exports.recordMaterialUsed = async (usedData) => {
         );
     }
 
+    // ─── DEDUP GUARD ─────────────────────────────────────────────────────────
+    // Prevent double-save: same project + material + date + qty → return existing.
+    const usedDate = usedData.date ||
+        (usedData.usedDate
+            ? usedData.usedDate.substring(0, 10)
+            : new Date().toISOString().split("T")[0]);
+
+    const dupSnap = await materialUsedCollection
+        .where("projectNo", "==", usedData.projectNo)
+        .where("materialId", "==", usedData.materialId)
+        .where("date", "==", usedDate)
+        .where("quantityUsed", "==", qtyUsed)
+        .get();
+
+    if (!dupSnap.empty) {
+        // Already saved — do NOT touch stock again
+        const existing = dupSnap.docs[0];
+        return { usageId: existing.id, ...existing.data() };
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     const availableStock = Number(currentStock.stock) || 0;
     if (qtyUsed > availableStock) {
         throw new Error(
@@ -194,7 +215,9 @@ exports.recordMaterialUsed = async (usedData) => {
         );
     }
 
+    usedData.date = usedDate;
     usedData.usedDate = usedData.usedDate || new Date().toISOString();
+    usedData.createdAt = new Date().toISOString();
     const docRef = await materialUsedCollection.add(usedData);
 
     await stockRef.update({
@@ -203,6 +226,49 @@ exports.recordMaterialUsed = async (usedData) => {
     });
 
     return { usageId: docRef.id, ...usedData };
+};
+
+/**
+ * UPDATE a material-used record.
+ * Stock adjusts by DIFFERENCE only (not full re-deduction).
+ *   old qty=5, new qty=8  →  stock decreases by 3 more
+ *   old qty=5, new qty=3  →  stock increases by 2 (returned)
+ */
+exports.updateMaterialUsed = async (usageId, updateData) => {
+    const docRef = materialUsedCollection.doc(usageId);
+    const doc = await docRef.get();
+    if (!doc.exists) throw new Error("Material used record not found");
+
+    const oldData = doc.data();
+    const oldQty = Number(oldData.quantityUsed) || 0;
+    const newQty = Number(updateData.quantityUsed);
+
+    if (!isNaN(newQty) && newQty !== oldQty) {
+        const stockId = `${oldData.projectNo}_${oldData.materialId}`;
+        const stockRef = stockCollection.doc(stockId);
+        const stockDoc = await stockRef.get();
+
+        if (stockDoc.exists) {
+            const currentStock = stockDoc.data();
+            const diff = newQty - oldQty; // +ve = more used, -ve = returned
+            const newAvailable = (Number(currentStock.stock) || 0) - diff;
+
+            if (newAvailable < 0) {
+                throw new Error(
+                    `Insufficient stock. Available: ${currentStock.stock}, Extra needed: ${diff}`
+                );
+            }
+
+            await stockRef.update({
+                usedQuantity: (Number(currentStock.usedQuantity) || 0) + diff,
+                stock: newAvailable
+            });
+        }
+    }
+
+    await docRef.update({ ...updateData, updatedAt: new Date().toISOString() });
+    const updatedDoc = await docRef.get();
+    return { usageId: updatedDoc.id, ...updatedDoc.data() };
 };
 
 // --- Material Stock --- //
@@ -268,6 +334,28 @@ exports.addMaterialRequired = async (data) => {
     };
 };
 
+exports.deleteMaterialUsed = async (usageId) => {
+    const docRef = materialUsedCollection.doc(usageId);
+    const doc = await docRef.get();
+    if (!doc.exists) throw new Error("Material used record not found");
+
+    const data = doc.data();
+    const qtyUsed = Number(data.quantityUsed) || 0;
+
+    const stockId = `${data.projectNo}_${data.materialId}`;
+    const stockRef = stockCollection.doc(stockId);
+    const stockDoc = await stockRef.get();
+    if (stockDoc.exists && qtyUsed > 0) {
+        const currentStock = stockDoc.data();
+        await stockRef.update({
+            usedQuantity: Math.max(0, (Number(currentStock.usedQuantity) || 0) - qtyUsed),
+            stock: (Number(currentStock.stock) || 0) + qtyUsed
+        });
+    }
+
+    await docRef.delete();
+    return { message: "Material used record deleted and stock restored", usageId };
+};
 
 
 exports.getAllMaterialRequired = async () => {

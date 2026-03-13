@@ -21,7 +21,8 @@ router.put("/received/:receiptId/payment", isAdmin, materialController.updateRec
 router.post("/used", isAdmin, materialController.recordMaterialUsed);
 router.get("/used", isAdmin, materialController.getAllMaterialUsed);
 router.get("/used/:projectNo", isAdmin, materialController.getAllMaterialUsed);
-
+router.put("/used/:usageId", isAdmin, materialController.updateMaterialUsed);
+router.delete("/used/:usageId", isAdmin, materialController.deleteMaterialUsed);
 // --- Material Stock --- //
 router.get("/stock/:projectNo", isAdmin, materialController.getMaterialStock);
 
