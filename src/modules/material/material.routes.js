@@ -7,13 +7,14 @@ const { authorize } = require("../../middleware/role.middleware");
 const isAdmin = [verifyToken, authorize(["admin"])];
 
 // --- Material Master --- //
-router.post("/", isAdmin, materialController.createMaterial);
-router.get("/", isAdmin, materialController.getMaterials);
+// router.post("/", isAdmin, materialController.createMaterial);
+// router.get("/", isAdmin, materialController.getMaterials);
 
 // --- Material Received --- //
 router.post("/received", isAdmin, materialController.recordMaterialReceived);
 router.get("/received", isAdmin, materialController.getMaterialReceived);
 router.get("/received/:materialId", isAdmin, materialController.getMaterialReceivedByMaterialId);
+router.put("/received/:receiptId", isAdmin, materialController.updateMaterialReceived);
 router.put("/received/:receiptId/payment", isAdmin, materialController.updateReceiptPayment);
 
 // --- Material Used --- //
@@ -26,7 +27,7 @@ router.get("/stock/:projectNo", isAdmin, materialController.getMaterialStock);
 
 // --- Material Required --- //
 router.post("/required", isAdmin, materialController.addMaterialRequired);
-router.put("/required/:id", isAdmin, materialController.updateMaterialRequired);
+
 router.get("/required", isAdmin, materialController.getAllMaterialRequired);
 router.get("/required/:projectNo", isAdmin, materialController.getMaterialRequired);
 

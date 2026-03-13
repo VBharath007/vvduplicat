@@ -44,8 +44,30 @@ exports.recordMaterialReceived = async (receivedData) => {
         }
     }
 
-    receivedData.createdAt = new Date().toISOString();
+    // ─── DEDUP GUARD ─────────────────────────────────────────────────────────
+    // Prevent re-saving the same receipt when Flutter re-submits existing
+    // records (e.g. on edit save). Check: same project + material + date +
+    // quantity within a 2-minute window → return existing record, skip insert.
+    const receiptDate = receivedData.date ||
+        new Date().toISOString().split("T")[0];
     const quantity = Number(receivedData.quantity) || 0;
+
+    const dupSnap = await materialReceivedCollection
+        .where("projectNo", "==", receivedData.projectNo)
+        .where("materialId", "==", receivedData.materialId)
+        .where("date", "==", receiptDate)
+        .where("quantity", "==", quantity)
+        .get();
+
+    if (!dupSnap.empty) {
+        // Already saved — return the existing record without touching stock
+        const existing = dupSnap.docs[0];
+        return { receiptId: existing.id, ...existing.data() };
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    receivedData.createdAt = new Date().toISOString();
+    receivedData.date = receiptDate;
     const rate = Number(receivedData.rate) || 0;
     receivedData.totalAmount = quantity * rate;
     receivedData.paidAmount = Number(receivedData.paidAmount) || 0;
@@ -95,6 +117,45 @@ exports.updateReceiptPayment = async (receiptId, paymentData) => {
     if (!doc.exists) throw new Error("Receipt not found");
     const newPaidAmount = Number(paymentData.paidAmount) || 0;
     await docRef.update({ paidAmount: newPaidAmount });
+    const updatedDoc = await docRef.get();
+    return { receiptId: updatedDoc.id, ...updatedDoc.data() };
+};
+
+exports.updateMaterialReceived = async (receiptId, updateData) => {
+    const docRef = materialReceivedCollection.doc(receiptId);
+    const doc = await docRef.get();
+    if (!doc.exists) throw new Error("Receipt not found");
+
+    const oldData = doc.data();
+    const existingQty = Number(oldData.quantity) || 0;
+    const addedQty = Number(updateData.quantity) || 0; // The NEW quantity being added
+    const newQty = existingQty + addedQty; // Sum of old and new
+    
+    const currentRate = updateData.rate !== undefined ? Number(updateData.rate) : (Number(oldData.rate) || 0);
+
+    // Update derived fields
+    const updatedRecord = {
+        ...updateData,
+        quantity: newQty,
+        totalAmount: newQty * currentRate,
+        updatedAt: new Date().toISOString()
+    };
+
+    // Handle Stock Update (Additive)
+    if (addedQty !== 0) {
+        const stockId = `${oldData.projectNo}_${oldData.materialId}`;
+        const stockRef = stockCollection.doc(stockId);
+        const stockDoc = await stockRef.get();
+        if (stockDoc.exists) {
+            const currentStock = stockDoc.data();
+            await stockRef.update({
+                receivedQuantity: (currentStock.receivedQuantity || 0) + addedQty,
+                stock: (currentStock.stock || 0) + addedQty
+            });
+        }
+    }
+
+    await docRef.update(updatedRecord);
     const updatedDoc = await docRef.get();
     return { receiptId: updatedDoc.id, ...updatedDoc.data() };
 };
@@ -207,10 +268,7 @@ exports.addMaterialRequired = async (data) => {
     };
 };
 
-exports.updateMaterialRequired = async (id, data) => {
-    await materialRequiredCollection.doc(id).update(data);
-    return { id, ...data };
-};
+
 
 exports.getAllMaterialRequired = async () => {
     const snap = await materialRequiredCollection.get();

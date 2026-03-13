@@ -58,6 +58,15 @@ exports.updateReceiptPayment = async (req, res, next) => {
     }
 };
 
+exports.updateMaterialReceived = async (req, res, next) => {
+    try {
+        const result = await materialService.updateMaterialReceived(req.params.receiptId, req.body);
+        res.status(200).json({ success: true, data: result });
+    } catch (error) {
+        res.status(400).json({ success: false, message: error.message });
+    }
+};
+
 // --- Material Used --- //
 exports.recordMaterialUsed = async (req, res, next) => {
     try {
@@ -103,14 +112,7 @@ exports.addMaterialRequired = async (req, res, next) => {
     }
 };
 
-exports.updateMaterialRequired = async (req, res, next) => {
-    try {
-        const result = await materialService.updateMaterialRequired(req.params.id, req.body);
-        res.status(200).json({ message: "Material Required Updated", data: result });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-};
+
 
 exports.getMaterialRequired = async (req, res, next) => {
     try {
