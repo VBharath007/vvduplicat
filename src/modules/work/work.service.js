@@ -3,13 +3,21 @@ const { db } = require("../../config/firebase");
 const worksCollection = db.collection("works");
 
 /**
- * Upsert rule:
- * - workId provided          → direct update by ID (edit flow, never creates).
- * - No workId, same workName → upsert: ONE doc per (projectNo + date + workName).
- * - No workId, new workName  → create NEW doc (allows multiple works per day).
+ * CONCEPT:
+ * - Each work name is UNIQUE per project (e.g. "Pillar shuttering" = 1 doc).
+ * - Every day the user updates that work → same doc gets updated (date changes).
+ * - tomorrowWork from today auto-fills as workName for next day on Flutter side.
+ * - You CANNOT create two docs with the same workName for the same project.
  *
- * This lets the user have "ceiling work" and "basement work" on the same day
- * as separate, independent Firestore documents.
+ * Upsert rule:
+ * - workId provided                    → direct update by ID (edit flow).
+ * - No workId, existing workName found → UPDATE that doc (regardless of date).
+ * - No workId, new workName            → CREATE new doc.
+ *
+ * Example flow:
+ *   Day 12: workName="Pillar shuttering", tomorrowWork="Ceiling shuttering" → NEW doc created
+ *   Day 13: workName="Ceiling shuttering" (auto-filled from tomorrowWork)   → NEW doc created
+ *   Day 13: workName="Pillar shuttering" again                               → UPDATES existing doc (not a new one)
  */
 exports.createWork = async (workData) => {
     if (!workData.projectNo) {
@@ -19,12 +27,12 @@ exports.createWork = async (workData) => {
     const workDate = workData.date || new Date().toISOString().split("T")[0];
     workData.date = workDate;
 
-    // Normalize and ensure both 'work' and 'workName' exist for the Frontend
+    // Normalize — keep both 'work' and 'workName' in sync for Flutter
     const name = (workData.work || workData.workName || "General Work").trim();
     workData.work = name;
     workData.workName = name;
 
-    // --- EDIT FLOW: workId supplied → direct overwrite ---
+    // ── EDIT FLOW: workId supplied → direct overwrite ────────────────────────
     if (workData.workId) {
         const docRef = worksCollection.doc(workData.workId);
         const doc = await docRef.get();
@@ -41,15 +49,16 @@ exports.createWork = async (workData) => {
         return { workId: updated.id, ...updated.data() };
     }
 
-    // --- UPSERT FLOW ---
+    // ── UPSERT FLOW: unique key = projectNo + workName (date does NOT matter) ─
+    // Same work name on a different date = update the existing doc, not a new one.
     const existingSnapshot = await worksCollection
         .where("projectNo", "==", workData.projectNo)
-        .where("date", "==", workDate)
         .where("work", "==", name)
         .limit(1)
         .get();
 
     if (!existingSnapshot.empty) {
+        // Work name already exists for this project → update it
         const existingDoc = existingSnapshot.docs[0];
         const updatePayload = { ...workData };
         delete updatePayload.createdAt;
@@ -61,7 +70,7 @@ exports.createWork = async (workData) => {
         return { workId: updated.id, ...updated.data() };
     }
 
-    // Truly new entry
+    // ── Truly new work name → create new doc ────────────────────────────────
     workData.createdAt = new Date().toISOString();
     if (workData.labour != null) workData.labour = String(workData.labour);
 
@@ -75,7 +84,15 @@ exports.getWorks = async (projectNo) => {
         query = query.where("projectNo", "==", projectNo);
     }
     const snapshot = await query.get();
-    return snapshot.docs.map((doc) => ({ workId: doc.id, ...doc.data() }));
+    const works = snapshot.docs.map((doc) => ({ workId: doc.id, ...doc.data() }));
+
+    // Sort by date DESC (latest first) then by work name ASC
+    return works.sort((a, b) => {
+        const dateA = new Date(a.date || 0);
+        const dateB = new Date(b.date || 0);
+        if (dateB - dateA !== 0) return dateB - dateA;
+        return (a.work || "").localeCompare(b.work || "");
+    });
 };
 
 exports.getWorkById = async (workId) => {
@@ -117,7 +134,6 @@ exports.deleteWork = async (workId) => {
 
 /**
  * Get work documents for a specific project + date.
- * Returns all works for that date (there can be multiple if different names).
  */
 exports.getWorkByDate = async (projectNo, date) => {
     const snapshot = await worksCollection

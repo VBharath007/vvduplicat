@@ -11,7 +11,7 @@ exports.createWork = async (req, res, next) => {
 
 exports.getWorks = async (req, res, next) => {
     try {
-        const { projectNo } = req.query;
+        const projectNo = req.params.projectNo || req.query.projectNo;
         const result = await workService.getWorks(projectNo);
         res.status(200).json({ success: true, data: result });
     } catch (error) {
@@ -52,7 +52,9 @@ exports.deleteWork = async (req, res, next) => {
  */
 exports.getWorkByDate = async (req, res, next) => {
     try {
-        const { projectNo, date } = req.query;
+        const projectNo = req.params.projectNo || req.query.projectNo;
+        const date = req.params.date || req.query.date;
+
         if (!projectNo || !date) {
             return res.status(400).json({ success: false, message: "projectNo and date are required" });
         }
