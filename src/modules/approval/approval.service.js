@@ -1,9 +1,11 @@
 const { db } = require("../../config/firebase");
+const dayjs = require("dayjs");
 
 const approvalsCollection = db.collection("approvals");
 const approvalAdvancesCollection = db.collection("approvalAdvances");
 const approvalExpensesCollection = db.collection("approvalExpenses");
 const workStatusCollection = db.collection("workStatusOptions");
+
 
 const DEFAULT_WORK_STATUSES = [
     "DTCP - SINGLE PLOT",
@@ -22,6 +24,9 @@ const DEFAULT_WORK_STATUSES = [
     "BLUEPRINT",
     "OTHERS"
 ];
+
+
+const getCurrentDate = () => dayjs().format("DD-MM-YYYY");
 
 // Initialize default statuses if they don't exist
 const initializeWorkStatuses = async () => {
@@ -92,7 +97,7 @@ exports.createApproval = async (data) => {
 
     const newApproval = {
         ...data,
-        createdAt: new Date().toISOString(),
+        createdAt: getCurrentDate(),
         statusTracking: data.statusTracking || { currentStatus: "ongoing" },
         financialDetails: data.financialDetails || { totalFees: 0 }
     };
@@ -102,16 +107,27 @@ exports.createApproval = async (data) => {
 };
 
 exports.getApprovals = async () => {
-    const snap = await approvalsCollection.get();
+    const snap = await approvalsCollection
+        .orderBy("projectNo", "asc") // ascending order
+        .get();
+
     const approvals = [];
 
-    // We can also fetch calculations for each, but it might be heavy. Let's return basic and they can get details by ID.
-    // Or we enhance it with calculations. Let's just return what is requested or add basic calculations.
     for (const doc of snap.docs) {
         const data = doc.data();
-        const calcs = await getApprovalCalculations(doc.id, data.financialDetails?.totalFees);
-        approvals.push({ id: doc.id, ...data, calculations: calcs });
+
+        const calcs = await getApprovalCalculations(
+            doc.id,
+            data.financialDetails?.totalFees
+        );
+
+        approvals.push({
+            id: doc.id,
+            ...data,
+            calculations: calcs
+        });
     }
+
     return approvals;
 };
 
@@ -168,11 +184,11 @@ exports.addAdvance = async (id, payload) => {
         const data = {
             approvalId: id,
             sno: advance.sno,
-            date: advance.date || new Date().toISOString(),
+            date: advance.date || getCurrentDate(),
             amountReceived: Number(advance.amountReceived) || 0,
             remark: advance.remark || "",
             modeOfPayment: advance.modeOfPayment,
-            createdAt: new Date().toISOString()
+            createdAt: getCurrentDate()
         };
         batch.set(docRef, data);
         addedAdvances.push({ id: docRef.id, ...data });
@@ -208,10 +224,10 @@ exports.addExpense = async (id, payload) => {
         const data = {
             approvalId: id,
             sno: expense.sno,
-            date: expense.date || new Date().toISOString(),
+            date: expense.date || getCurrentDate(),
             particularRemark: expense.particularRemark || "",
             amount: Number(expense.amount) || 0,
-            createdAt: new Date().toISOString()
+            createdAt: getCurrentDate()
         };
         batch.set(docRef, data);
         addedExpenses.push({ id: docRef.id, ...data });
@@ -242,4 +258,204 @@ exports.updateStatus = async (id, currentStatus) => {
     });
 
     return this.getApprovalById(id);
+};
+
+
+
+exports.updateExpense = async (expenseId, updateData) => {
+
+    const docRef = approvalExpensesCollection.doc(expenseId);
+    const doc = await docRef.get();
+
+    if (!doc.exists) {
+        throw new Error("Expense not found");
+    }
+
+    await docRef.update({
+        particularRemark: updateData.particularRemark,
+        amount: Number(updateData.amount),
+        date: updateData.date
+    });
+
+    return {
+        message: "Expense updated successfully"
+    };
+};
+
+
+exports.deleteExpense = async (expenseId) => {
+
+    const docRef = approvalExpensesCollection.doc(expenseId);
+    const doc = await docRef.get();
+
+    if (!doc.exists) {
+        throw new Error("Expense not found");
+    }
+
+    await docRef.delete();
+
+    return {
+        message: "Expense deleted successfully"
+    };
+};
+
+
+exports.updateAdvance = async (advanceId, updateData) => {
+
+    const docRef = approvalAdvancesCollection.doc(advanceId);
+    const doc = await docRef.get();
+
+    if (!doc.exists) {
+        throw new Error("Advance not found");
+    }
+
+    await docRef.update({
+        amountReceived: Number(updateData.amountReceived),
+        remark: updateData.remark,
+        date: updateData.date
+    });
+
+    return {
+        message: "Advance updated successfully"
+    };
+};
+
+exports.deleteAdvance = async (advanceId) => {
+
+    const docRef = approvalAdvancesCollection.doc(advanceId);
+    const doc = await docRef.get();
+
+    if (!doc.exists) {
+        throw new Error("Advance not found");
+    }
+
+    await docRef.delete();
+
+    return {
+        message: "Advance deleted successfully"
+    };
+};
+
+
+exports.updateTotalFees = async (req, res) => {
+    try {
+
+        const { id } = req.params;
+        const { totalFees } = req.body;
+
+        const docRef = approvalsCollection.doc(id);
+        const doc = await docRef.get();
+
+        if (!doc.exists) {
+            return res.status(404).json({ message: "Approval not found" });
+        }
+
+        await docRef.update({
+            "financialDetails.totalFees": Number(totalFees)
+        });
+
+        // recalculate values
+        const calculations = await getApprovalCalculations(id, totalFees);
+
+        res.json({
+            message: "Total fees updated successfully",
+            calculations
+        });
+
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+
+
+exports.addWorkStatus = async (req, res) => {
+    try {
+
+        const { name } = req.body;
+
+        if (!name) {
+            return res.status(400).json({ message: "Work status name required" });
+        }
+
+        const docRef = await workStatusCollection.add({
+            name: name.toUpperCase(),
+            status: "pending",
+            createdAt: new Date().toISOString()
+        });
+
+        res.json({
+            message: "Work status created and waiting for approval",
+            id: docRef.id
+        });
+
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+
+exports.confirmWorkStatus = async (req, res) => {
+    try {
+
+        const { id } = req.params;
+
+        const docRef = workStatusCollection.doc(id);
+        const doc = await docRef.get();
+
+        if (!doc.exists) {
+            return res.status(404).json({ message: "Work status not found" });
+        }
+
+        await docRef.update({
+            status: "approved"
+        });
+
+        res.json({
+            message: "Work status approved successfully"
+        });
+
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+
+
+exports.deleteWorkStatus = async (req, res) => {
+    try {
+
+        const { id } = req.params;
+
+        const docRef = workStatusCollection.doc(id);
+        const doc = await docRef.get();
+
+        if (!doc.exists) {
+            return res.status(404).json({ message: "Work status not found" });
+        }
+
+        await docRef.delete();
+
+        res.json({
+            message: "Work status deleted"
+        });
+
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+};
+
+
+exports.getWorkStatuses = async (req, res) => {
+
+    const snap = await workStatusCollection
+        .where("status", "==", "approved")
+        .get();
+
+    const statuses = snap.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+    }));
+
+    res.json(statuses);
 };

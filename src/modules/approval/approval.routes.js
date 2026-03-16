@@ -11,16 +11,30 @@ router.post("/", isAdmin, approvalController.createApproval);
 router.get("/", isAdmin, approvalController.getApprovals);
 router.get("/:id", isAdmin, approvalController.getApprovalById);
 router.put("/:id", isAdmin, approvalController.updateApproval);
+router.delete("/:id", isAdmin, approvalController.deleteApproval);
+
+router.put("/:id/totalfees", isAdmin, approvalController.updateTotalFees);
 
 // --- Advance Payment APIs --- //
 router.post("/:id/advance", isAdmin, approvalController.addAdvance);
 router.get("/:id/advance", isAdmin, approvalController.getAdvances);
+router.put("/advance/:advanceId", isAdmin, approvalController.updateAdvance);
+router.delete("/advance/:advanceId", isAdmin, approvalController.deleteAdvance);
 
 // --- Expense APIs --- //
 router.post("/:id/expense", isAdmin, approvalController.addExpense);
 router.get("/:id/expense", isAdmin, approvalController.getExpenses);
+router.put("/expense/:expenseId", isAdmin, approvalController.updateExpense);
+router.delete("/expense/:expenseId", isAdmin, approvalController.deleteExpense);
 
 // --- Status Update --- //
 router.put("/:id/status", isAdmin, approvalController.updateStatus);
+
+
+router.post("/work-status", isAdmin, approvalController.addWorkStatus);
+router.put("/work-status/:id/confirm", isAdmin, approvalController.confirmWorkStatus);
+router.delete("/work-status/:id", isAdmin, approvalController.deleteWorkStatus);
+router.get("/work-status", approvalController.getWorkStatuses);
+
 
 module.exports = router;
