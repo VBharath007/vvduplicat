@@ -7,7 +7,7 @@ const { authorize } = require("../../middleware/role.middleware");
 const isAdmin = [verifyToken, authorize(["admin"])];
 
 // --- Project Type Options (Put SPECIFIC routes BEFORE general ones) --- //
-router.put("/project-type", isAdmin, approvalController.addProjectType);
+router.post("/project-type", isAdmin, approvalController.addProjectType);
 router.get("/project-type", approvalController.getProjectTypes);
 router.put("/project-type/:id/confirm", isAdmin, approvalController.confirmProjectType);
 router.delete("/project-type/:id", isAdmin, approvalController.deleteProjectType);

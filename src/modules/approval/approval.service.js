@@ -407,16 +407,14 @@ exports.deleteProjectType = async (id) => {
 };
 
 exports.getProjectTypes = async () => {
-    // 1. Fetch all documents from the "projectTypeOptions" collection
     const snap = await projectTypeCollection.get();
 
-    // 2. Map the documents and filter by "approved" status
     const typesFromDb = snap.docs.map(doc => ({
         id: doc.id,
         ...doc.data()
     }));
 
-    // Return only those that are confirmed/approved
+    // Returns approved items or items with no status (defaulting to approved)
     return typesFromDb
         .filter(s => s.status === "approved" || !s.status)
         .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
@@ -437,12 +435,11 @@ exports.addProjectType = async (name) => {
         return { message: "Project type already exists", alreadyExists: true };
     }
 
-    // This stores the new status in the actual Firestore collection
     const docRef = await projectTypeCollection.add({
         name: upperName,
-        status: "pending", // Will not show in app until confirmed
+        status: "approved", // Changed from "pending" to "approved"
         createdAt: new Date().toISOString()
     });
 
-    return { id: docRef.id, message: "Work status added" };
+    return { id: docRef.id, message: "Project type added successfully" };
 };
