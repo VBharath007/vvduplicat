@@ -299,146 +299,47 @@ exports.updateTotalFees = async (req, res) => {
 
 exports.addWorkStatus = async (req, res) => {
     try {
-        const { name } = req.body;
-
-        const docRef = await workStatusCollection.add({
-            name: name.toUpperCase(),
-            status: "pending"
-        });
-
-        res.json({
-            message: "Work status added",
-            id: docRef.id
-        });
-
+        const result = await approvalService.addWorkStatus(req.body.name);
+        res.status(200).json(result);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 };
 
-
-
 exports.confirmWorkStatus = async (req, res) => {
     try {
-
-        const { id } = req.params;
-
-        const docRef = workStatusCollection.doc(id);
-        const doc = await docRef.get();
-
-        if (!doc.exists) {
-            return res.status(404).json({
-                message: "Work status not found"
-            });
-        }
-
-        await docRef.update({
-            status: "approved"
-        });
-
-        res.json({
-            message: "Work status confirmed successfully"
-        });
-
+        const result = await approvalService.confirmWorkStatus(req.params.id);
+        res.status(200).json(result);
     } catch (error) {
-        res.status(500).json({
-            error: error.message
-        });
+        res.status(500).json({ error: error.message });
     }
 };
-
 
 exports.deleteWorkStatus = async (req, res) => {
     try {
-
-        const { id } = req.params;
-
-        const docRef = workStatusCollection.doc(id);
-        const doc = await docRef.get();
-
-        if (!doc.exists) {
-            return res.status(404).json({
-                message: "Work status not found"
-            });
-        }
-
-        await docRef.delete();
-
-        res.json({
-            message: "Work status deleted successfully"
-        });
-
+        const result = await approvalService.deleteWorkStatus(req.params.id);
+        res.status(200).json(result);
     } catch (error) {
-        res.status(500).json({
-            error: error.message
-        });
+        res.status(500).json({ error: error.message });
     }
 };
-
 
 exports.getWorkStatuses = async (req, res) => {
     try {
-
-        const snap = await workStatusCollection
-            .where("status", "==", "approved")
-            .get();
-
-        const statuses = snap.docs.map(doc => ({
-            id: doc.id,
-            ...doc.data()
-        }));
-
-        res.json(statuses);
-
+        const result = await approvalService.getWorkStatuses();
+        res.status(200).json(result);
     } catch (error) {
-        res.status(500).json({
-            error: error.message
-        });
+        res.status(500).json({ error: error.message });
     }
 };
-
 
 exports.updateExpense = async (req, res) => {
     try {
-
         const { expenseId } = req.params;
-        const { amount, particularRemark, date } = req.body;
-
-        const docRef = approvalExpensesCollection.doc(expenseId);
-        const doc = await docRef.get();
-
-        if (!doc.exists) {
-            return res.status(404).json({
-                message: "Expense not found"
-            });
-        }
-
-        const updateData = {};
-
-        if (amount !== undefined) {
-            updateData.amount = Number(amount);
-        }
-
-        if (particularRemark !== undefined) {
-            updateData.particularRemark = particularRemark;
-        }
-
-        if (date !== undefined) {
-            updateData.date = date;
-        }
-
-        await docRef.update(updateData);
-
-        res.json({
-            message: "Expense updated successfully",
-            id: expenseId
-        });
-
+        const result = await approvalService.updateExpense(expenseId, req.body);
+        res.status(200).json(result);
     } catch (error) {
         console.error("Update Expense Error:", error);
-
-        res.status(500).json({
-            error: error.message
-        });
+        res.status(500).json({ error: error.message });
     }
-};
+};

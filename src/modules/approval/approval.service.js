@@ -36,7 +36,11 @@ const initializeWorkStatuses = async () => {
             const batch = db.batch();
             DEFAULT_WORK_STATUSES.forEach(status => {
                 const docRef = workStatusCollection.doc();
-                batch.set(docRef, { name: status });
+                batch.set(docRef, { 
+                    name: status.toUpperCase(),
+                    status: "approved",
+                    createdAt: new Date().toISOString()
+                });
             });
             await batch.commit();
         }
@@ -80,7 +84,11 @@ const ensureWorkStatusExists = async (status) => {
     const upperStatus = status.toUpperCase();
     const snap = await workStatusCollection.where("name", "==", upperStatus).get();
     if (snap.empty) {
-        await workStatusCollection.add({ name: upperStatus });
+        await workStatusCollection.add({ 
+            name: upperStatus,
+            status: "approved",
+            createdAt: new Date().toISOString()
+        });
     }
 };
 
@@ -369,93 +377,55 @@ exports.updateTotalFees = async (req, res) => {
 
 
 
-exports.addWorkStatus = async (req, res) => {
-    try {
+exports.addWorkStatus = async (name) => {
+    if (!name) throw new Error("Work status name required");
+    const upperName = name.toUpperCase();
 
-        const { name } = req.body;
-
-        if (!name) {
-            return res.status(400).json({ message: "Work status name required" });
-        }
-
-        const docRef = await workStatusCollection.add({
-            name: name.toUpperCase(),
-            status: "pending",
-            createdAt: new Date().toISOString()
-        });
-
-        res.json({
-            message: "Work status created and waiting for approval",
-            id: docRef.id
-        });
-
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-};
-
-
-exports.confirmWorkStatus = async (req, res) => {
-    try {
-
-        const { id } = req.params;
-
-        const docRef = workStatusCollection.doc(id);
-        const doc = await docRef.get();
-
-        if (!doc.exists) {
-            return res.status(404).json({ message: "Work status not found" });
-        }
-
-        await docRef.update({
-            status: "approved"
-        });
-
-        res.json({
-            message: "Work status approved successfully"
-        });
-
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-};
-
-
-
-exports.deleteWorkStatus = async (req, res) => {
-    try {
-
-        const { id } = req.params;
-
-        const docRef = workStatusCollection.doc(id);
-        const doc = await docRef.get();
-
-        if (!doc.exists) {
-            return res.status(404).json({ message: "Work status not found" });
-        }
-
-        await docRef.delete();
-
-        res.json({
-            message: "Work status deleted"
-        });
-
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-};
-
-
-exports.getWorkStatuses = async (req, res) => {
-
-    const snap = await workStatusCollection
-        .where("status", "==", "approved")
+    // Check if it already exists
+    const existingSnap = await workStatusCollection
+        .where("name", "==", upperName)
         .get();
 
-    const statuses = snap.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-    }));
+    if (!existingSnap.empty) {
+        const doc = existingSnap.docs[0];
+        return { 
+            id: doc.id, 
+            message: "Work status already exists", 
+            alreadyExists: true 
+        };
+    }
 
-    res.json(statuses);
+    const docRef = await workStatusCollection.add({
+        name: upperName,
+        status: "pending",
+        createdAt: new Date().toISOString()
+    });
+
+    return { id: docRef.id, message: "Work status added" };
+};
+
+exports.confirmWorkStatus = async (id) => {
+    const docRef = workStatusCollection.doc(id);
+    const doc = await docRef.get();
+    if (!doc.exists) throw new Error("Work status not found");
+
+    await docRef.update({ status: "approved" });
+    return { message: "Work status confirmed successfully" };
+};
+
+exports.deleteWorkStatus = async (id) => {
+    const docRef = workStatusCollection.doc(id);
+    const doc = await docRef.get();
+    if (!doc.exists) throw new Error("Work status not found");
+
+    await docRef.delete();
+    return { message: "Work status deleted successfully" };
+};
+
+exports.getWorkStatuses = async () => {
+    const snap = await workStatusCollection.get();
+    return snap.docs
+        .map(doc => ({ id: doc.id, ...doc.data() }))
+        .filter(s => s.status === "approved" || !s.status) // include defaults
+        .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
 };

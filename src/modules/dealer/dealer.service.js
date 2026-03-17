@@ -2,66 +2,304 @@ const { db } = require("../../config/firebase");
 
 const materialReceivedCollection = db.collection("materialReceived");
 const paymentsCollection = db.collection("dealerPayments");
+const projectsCollection = db.collection("projects");
+const siteExpensesCollection = db.collection("siteExpenses");
 
-exports.getDealerHistory = async (phoneNumber) => {
-    if (!phoneNumber) {
-        throw new Error("Phone number is required");
+// ─── Internal helper ──────────────────────────────────────────────────────────
+// Batch-fetch projectName for every unique projectNo in a single Firestore read.
+// Returns map: { "PRJ001": "Kumar Villa", "PRJ002": "Office Build" }
+// Falls back to projectNo if projectName field is missing.
+// ─────────────────────────────────────────────────────────────────────────────
+async function _getProjectNames(projectNos) {
+    const uniqueNos = [...new Set(projectNos)].filter(Boolean);
+    if (uniqueNos.length === 0) return {};
+
+    const nameMap = {};
+    for (let i = 0; i < uniqueNos.length; i += 30) {
+        const chunk = uniqueNos.slice(i, i + 30);
+        const snap = await projectsCollection
+            .where("projectNo", "in", chunk).get();
+        snap.forEach(doc => {
+            const d = doc.data();
+            nameMap[d.projectNo] = d.projectName || d.projectNo;
+        });
     }
+    return nameMap;
+}
 
-    const snapshot = await materialReceivedCollection.where("dealerContact", "==", phoneNumber).get();
 
-    if (snapshot.empty) {
-        throw new Error("No dealer found with this phone number");
-    }
+// =============================================================================
+// getAllDealers
+//
+//  DEALER LIST SCREEN (Sketch image — first screen box)
+//
+//  Flutter renders one tile per dealer:
+//    dealerName        ← BIG primary text
+//    phoneNumber       ← smaller secondary text
+//    remainingAmount   ← shown below
+//    status badge      ← "Pending" or "Fully Paid"
+// =============================================================================
+exports.getAllDealers = async () => {
+    const snapshot = await materialReceivedCollection.get();
+    if (snapshot.empty) return [];
 
-    let dealerName = "";
-    const history = [];
-    let totalPayment = 0;
-    let advancedPayment = 0;
+    const dealerMap = {};
 
     snapshot.forEach(doc => {
         const data = doc.data();
-        if (!dealerName && data.dealerName) {
-            dealerName = data.dealerName;
+        const phone = data.dealerContact;
+        if (!phone) return;
+
+        if (!dealerMap[phone]) {
+            dealerMap[phone] = {
+                dealerName: data.dealerName || "",
+                phoneNumber: phone,
+                projects: new Set(),
+                totalAmount: 0,
+                advancedPayment: 0,
+                remainingAmount: 0,
+                transactionCount: 0,
+            };
         }
 
+        const d = dealerMap[phone];
+        const totalAmt = Number(data.totalAmount) || 0;
+        const paidAmt = Number(data.paidAmount) || 0;
+
+        d.totalAmount += totalAmt;
+        d.advancedPayment += paidAmt;
+        d.remainingAmount += (totalAmt - paidAmt);
+        d.transactionCount += 1;
+        d.projects.add(data.projectNo);
+
+        if (!d.dealerName && data.dealerName) d.dealerName = data.dealerName;
+    });
+
+    return Object.values(dealerMap).map(d => ({
+        dealerName: d.dealerName,       // PRIMARY — shown as card title
+        phoneNumber: d.phoneNumber,
+        projectCount: d.projects.size,
+        totalAmount: d.totalAmount,
+        advancedPayment: d.advancedPayment,
+        remainingAmount: d.remainingAmount,
+        transactionCount: d.transactionCount,
+        status: d.remainingAmount <= 0 ? "Fully Paid" : "Pending",
+    }));
+};
+
+
+// =============================================================================
+// getDealerHistory
+//
+//  DEALER DETAIL SCREEN (Sketch image — second screen box)
+//
+//  Top section:
+//    dealerName      ← heading
+//    phoneNumber     ← below the name
+//
+//  Body — ONE CARD PER PROJECT:
+//    [ Project 1 Card ]
+//      projectName
+//      material rows: materialName | qty | total | adv | bal
+//      project subtotal row
+//
+//    [ Project 2 Card ]
+//      projectName
+//      material rows ...
+//      project subtotal row
+//
+//  Bottom: overall summary
+// =============================================================================
+exports.getDealerHistory = async (phoneNumber) => {
+    if (!phoneNumber) throw new Error("Phone number is required");
+
+    const snapshot = await materialReceivedCollection
+        .where("dealerContact", "==", phoneNumber).get();
+
+    if (snapshot.empty) throw new Error("No dealer found with this phone number");
+
+    let dealerName = "";
+    const projectMap = {};
+    const projectNos = [];
+
+    snapshot.forEach(doc => {
+        const data = doc.data();
         const totalAmt = Number(data.totalAmount) || 0;
         const paidAmt = Number(data.paidAmount) || 0;
         const remAmt = totalAmt - paidAmt;
+        const projectNo = data.projectNo;
 
-        history.push({
-            projectNo: data.projectNo,
+        if (!dealerName && data.dealerName) dealerName = data.dealerName;
+        projectNos.push(projectNo);
+
+        if (!projectMap[projectNo]) {
+            projectMap[projectNo] = {
+                projectNo,
+                projectName: "",   // resolved after name lookup
+                materials: [],
+                projectTotalAmount: 0,
+                projectPaidAmount: 0,
+            };
+        }
+
+        projectMap[projectNo].materials.push({
+            receiptId: doc.id,
             materialId: data.materialId,
             materialName: data.materialName,
-            unit: data.unit,
-            rate: data.rate,
-            quantity: data.quantity,
+            unit: data.unit || "",
+            rate: data.rate || 0,
+            quantity: data.quantity || 0,
             totalAmount: totalAmt,
             paidAmount: paidAmt,
             remainingAmount: remAmt,
-            createdAt: data.createdAt
+            date: data.date || data.createdAt?.split("T")[0],
+            createdAt: data.createdAt,
+            status: remAmt <= 0 ? "Fully Paid"
+                : paidAmt > 0 ? "Partially Paid" : "Pending",
         });
 
-        totalPayment += totalAmt;
-        advancedPayment += paidAmt;
+        projectMap[projectNo].projectTotalAmount += totalAmt;
+        projectMap[projectNo].projectPaidAmount += paidAmt;
     });
 
-    const remainingAmountGlobal = totalPayment - advancedPayment;
+    // Single batch read for all project names
+    const nameMap = await _getProjectNames(projectNos);
+
+    const projects = Object.values(projectMap).map(p => {
+        const balance = p.projectTotalAmount - p.projectPaidAmount;
+        return {
+            projectNo: p.projectNo,
+            projectName: nameMap[p.projectNo] || p.projectNo,  // card header title
+            materials: p.materials.sort(
+                (a, b) => new Date(a.createdAt) - new Date(b.createdAt)
+            ),
+            projectSummary: {
+                totalAmount: p.projectTotalAmount,
+                paidAmount: p.projectPaidAmount,
+                remainingAmount: balance,
+                status: balance <= 0 ? "Fully Paid" : "Pending",
+            },
+        };
+    });
+
+    const overallTotal = projects.reduce((s, p) => s + p.projectSummary.totalAmount, 0);
+    const overallPaid = projects.reduce((s, p) => s + p.projectSummary.paidAmount, 0);
+    const overallRemaining = projects.reduce((s, p) => s + p.projectSummary.remainingAmount, 0);
 
     return {
         dealerDetails: {
-            dealerName,
-            phoneNumber
+            dealerName,    // heading on detail screen
+            phoneNumber,   // subheading
         },
-        materialHistory: history,
-        paymentSummary: {
-            totalPayment,
-            advancedPayment,
-            remainingAmount: remainingAmountGlobal
-        }
+        projects,          // array of project cards — Project 1, Project 2 ...
+        overallSummary: {
+            totalProjects: projects.length,
+            totalAmount: overallTotal,
+            advancedPayment: overallPaid,
+            remainingAmount: overallRemaining,
+            status: overallRemaining <= 0 ? "Fully Paid" : "Pending",
+        },
     };
 };
 
+
+// =============================================================================
+// getDealerPaymentLog  (NEW)
+//
+//  PAYMENT HISTORY SCREEN (Sketch image — third screen box)
+//  Shows every payment logged by updateDealerPayment, latest first.
+//  Includes running total and per-project outstanding balance.
+// =============================================================================
+exports.getDealerPaymentLog = async (phoneNumber) => {
+    if (!phoneNumber) throw new Error("Phone number is required");
+
+    const [paymentSnap, billSnap] = await Promise.all([
+        paymentsCollection
+            .where("dealerContact", "==", phoneNumber).get(),
+        materialReceivedCollection
+            .where("dealerContact", "==", phoneNumber).get(),
+    ]);
+
+    if (billSnap.empty) throw new Error("No dealer found with this phone number");
+
+    let dealerName = "";
+    let totalBilled = 0;
+    const projectNos = [];
+
+    billSnap.forEach(doc => {
+        const data = doc.data();
+        if (!dealerName && data.dealerName) dealerName = data.dealerName;
+        totalBilled += Number(data.totalAmount) || 0;
+        projectNos.push(data.projectNo);
+    });
+
+    const nameMap = await _getProjectNames(projectNos);
+
+    // Sort payments oldest→newest for running total calculation
+    const rawPayments = [];
+    paymentSnap.forEach(doc => {
+        const data = doc.data();
+        rawPayments.push({
+            paymentId: doc.id,
+            amountPaid: Number(data.amountPaid) || 0,
+            date: data.date,
+            displayDate: data.date ? data.date.split("T")[0] : null,
+            remark: data.remark || "Dealer Payment",
+        });
+    });
+    rawPayments.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    let runningTotal = 0;
+    const paymentLog = rawPayments.map(p => {
+        runningTotal += p.amountPaid;
+        return {
+            paymentId: p.paymentId,
+            date: p.displayDate,
+            amountPaid: p.amountPaid,
+            totalPaidSoFar: runningTotal,
+            remainingAfterThis: totalBilled - runningTotal,
+            remark: p.remark,
+        };
+    });
+
+    paymentLog.reverse(); // latest first for Flutter list
+
+    // Per-project outstanding
+    const projectBreakdown = {};
+    billSnap.forEach(doc => {
+        const data = doc.data();
+        const pNo = data.projectNo;
+        const totalAmt = Number(data.totalAmount) || 0;
+        const paidAmt = Number(data.paidAmount) || 0;
+
+        if (!projectBreakdown[pNo]) {
+            projectBreakdown[pNo] = {
+                projectNo: pNo,
+                projectName: nameMap[pNo] || pNo,
+                totalBilled: 0,
+                totalPaid: 0,
+                balance: 0,
+            };
+        }
+        projectBreakdown[pNo].totalBilled += totalAmt;
+        projectBreakdown[pNo].totalPaid += paidAmt;
+        projectBreakdown[pNo].balance += (totalAmt - paidAmt);
+    });
+
+    return {
+        dealerDetails: { dealerName, phoneNumber },
+        projectBreakdown: Object.values(projectBreakdown),
+        summary: {
+            totalBilled,
+            remainingBalance: totalBilled - runningTotal,
+        },
+    };
+};
+
+
+// =============================================================================
+// getDealerPaymentHistory  ← UNTOUCHED (your original code)
+// =============================================================================
 exports.getDealerPaymentHistory = async (phoneNumber) => {
     if (!phoneNumber) {
         throw new Error("Phone number is required");
@@ -105,10 +343,7 @@ exports.getDealerPaymentHistory = async (phoneNumber) => {
     });
 
     return {
-        dealerDetails: {
-            dealerName,
-            phoneNumber
-        },
+        dealerDetails: { dealerName, phoneNumber },
         paymentHistory,
         summary: {
             totalBilled,
@@ -118,52 +353,10 @@ exports.getDealerPaymentHistory = async (phoneNumber) => {
     };
 };
 
-exports.getAllDealers = async () => {
-    const snapshot = await materialReceivedCollection.get();
 
-    if (snapshot.empty) {
-        return [];
-    }
-
-    const dealerMap = {};
-
-    snapshot.forEach(doc => {
-        const data = doc.data();
-        const phone = data.dealerContact;
-
-        if (!phone) return;
-
-        if (!dealerMap[phone]) {
-            dealerMap[phone] = {
-                dealerName: data.dealerName || "",
-                phoneNumber: phone,
-                totalPayment: 0,
-                advancedPayment: 0,
-                remainingAmount: 0,
-                transactionCount: 0
-            };
-        }
-
-        const totalAmt = Number(data.totalAmount) || 0;
-        const paidAmt = Number(data.paidAmount) || 0;
-
-        dealerMap[phone].totalPayment += totalAmt;
-        dealerMap[phone].advancedPayment += paidAmt;
-        dealerMap[phone].remainingAmount += (totalAmt - paidAmt);
-        dealerMap[phone].transactionCount += 1;
-
-        // Use the first non-empty dealer name found
-        if (!dealerMap[phone].dealerName && data.dealerName) {
-            dealerMap[phone].dealerName = data.dealerName;
-        }
-    });
-
-    return Object.values(dealerMap);
-};
-
-// dealer.service.js
-// Separate collection
-
+// =============================================================================
+// updateDealerPayment  ← UNTOUCHED (your original code)
+// =============================================================================
 exports.updateDealerPayment = async (phoneNumber, amountPaid) => {
     if (!phoneNumber || !amountPaid || amountPaid <= 0) {
         throw new Error("Valid phone number and positive amountPaid are required");
@@ -173,7 +366,6 @@ exports.updateDealerPayment = async (phoneNumber, amountPaid) => {
         .where("dealerContact", "==", phoneNumber)
         .get();
 
-    // 1. Log the transaction in the NEW collection first
     const paymentRef = paymentsCollection.doc();
     await paymentRef.set({
         dealerContact: phoneNumber,
@@ -182,7 +374,6 @@ exports.updateDealerPayment = async (phoneNumber, amountPaid) => {
         type: "Payment"
     });
 
-    // 2. FIFO Logic to clear existing bills (existing logic)
     const bills = [];
     snapshot.forEach(doc => bills.push({ id: doc.id, ref: doc.ref, data: doc.data() }));
     bills.sort((a, b) => new Date(a.data.createdAt || 0) - new Date(b.data.createdAt || 0));
@@ -203,4 +394,412 @@ exports.updateDealerPayment = async (phoneNumber, amountPaid) => {
     await batch.commit();
 
     return { message: "Payment recorded successfully" };
+};
+
+
+// =============================================================================
+// getDealerProjectPaymentLog
+//
+//  Called when user TAPS a project card (e.g. "Kumar Villa") on the
+//  dealer detail screen.
+//
+//  Shows the full bill-by-bill payment history for THIS dealer + THIS project:
+//    - Every material receipt (bill) for this dealer+project
+//    - Each bill's totalAmount, paidAmount, remainingAmount, status
+//    - Sorted oldest → newest (so payment progress is clear)
+//    - Project-level summary at the bottom
+//
+//  WHY NOT dealerPayments collection:
+//    dealerPayments stores { dealerContact, amountPaid, date } only.
+//    It has NO projectNo — payments are applied FIFO across all projects.
+//    So the per-project payment truth lives in materialReceived.paidAmount.
+//
+//  ROUTE:  GET /api/dealers/:phoneNumber/project/:projectNo/payment-log
+// =============================================================================
+exports.getDealerProjectPaymentLog = async (phoneNumber, projectNo) => {
+    if (!phoneNumber) throw new Error("Phone number is required");
+    if (!projectNo) throw new Error("projectNo is required");
+
+    // ── Helper: "2026-03-17" → "17-03-2026" ──────────────────────────────────
+    const formatDate = (isoString) => {
+        if (!isoString) return null;
+        const d = isoString.split("T")[0]; // "2026-03-17"
+        const [yyyy, mm, dd] = d.split("-");
+        return `${dd}-${mm}-${yyyy}`;      // "17-03-2026"
+    };
+
+    // Fetch bills + payment log + project name in parallel
+    const [billSnap, paymentSnap, projectDoc] = await Promise.all([
+        materialReceivedCollection
+            .where("dealerContact", "==", phoneNumber)
+            .where("projectNo", "==", projectNo)
+            .get(),
+        paymentsCollection
+            .where("dealerContact", "==", phoneNumber)
+            .where("projectNo", "==", projectNo)
+            .get(),
+        projectsCollection.doc(projectNo).get(),
+    ]);
+
+    if (billSnap.empty) {
+        throw new Error(
+            `No bills found for dealer ${phoneNumber} on project ${projectNo}`
+        );
+    }
+
+    // Resolve names
+    let dealerName = "";
+    const projectName = projectDoc.exists
+        ? (projectDoc.data().projectName || projectNo)
+        : projectNo;
+
+    // ── Build bill list ───────────────────────────────────────────────────────
+    const bills = [];
+    let totalBilled = 0;
+    let totalPaid = 0;
+
+    billSnap.forEach(doc => {
+        const data = doc.data();
+        const totalAmt = Number(data.totalAmount) || 0;
+        const paidAmt = Number(data.paidAmount) || 0;
+        const balance = totalAmt - paidAmt;
+
+        if (!dealerName && data.dealerName) dealerName = data.dealerName;
+
+        bills.push({
+            receiptId: doc.id,
+            materialName: data.materialName,
+            materialId: data.materialId,
+            unit: data.unit || "",
+            rate: data.rate || 0,
+            quantity: data.quantity || 0,
+            date: formatDate(data.date
+                ? data.date + "T00:00:00"
+                : data.createdAt),
+            totalAmount: totalAmt,
+            paidAmount: paidAmt,
+            remainingAmount: balance,
+            status: balance <= 0
+                ? "Fully Paid"
+                : paidAmt > 0 ? "Partially Paid" : "Pending",
+            createdAt: data.createdAt,
+        });
+
+        totalBilled += totalAmt;
+        totalPaid += paidAmt;
+    });
+
+    bills.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+
+    // ── Build payment history from dealerPayments collection ─────────────────
+    // payDealerProjectPayment saves each payment with projectNo → query it here
+    const rawPayments = [];
+    paymentSnap.forEach(doc => {
+        const data = doc.data();
+        rawPayments.push({
+            paymentId: doc.id,
+            amount: Number(data.amountPaid) || 0,
+            date: formatDate(data.date),   // "17-03-2026"
+            method: data.method || "cash",
+            createdAt: data.date,               // raw ISO for sorting
+        });
+    });
+
+    // Sort latest payment first for Flutter list
+    rawPayments.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    // Running total (calculated oldest→newest then reversed)
+    const forRunning = [...rawPayments].reverse();
+    let running = 0;
+    const runningMap = {};
+    forRunning.forEach(p => {
+        running += p.amount;
+        runningMap[p.paymentId] = running;
+    });
+
+    const paymentHistory = rawPayments.map(p => ({
+        paymentId: p.paymentId,
+        date: p.date,              // "17-03-2026"
+        amount: p.amount,
+        method: p.method,
+        totalPaidSoFar: runningMap[p.paymentId],
+        remainingAfterThis: totalBilled - runningMap[p.paymentId],
+    }));
+
+    const totalRemaining = totalBilled - totalPaid;
+
+    return {
+        dealerDetails: {
+            dealerName,
+            phoneNumber,
+        },
+        projectDetails: {
+            projectNo,
+            projectName,
+        },
+        // ── Bill breakdown ────────────────────────────────────────────────────
+        bills,
+        // ── Payment history (each payment entry, latest first) ────────────────
+        paymentHistory,
+        // ── Summary ───────────────────────────────────────────────────────────
+        summary: {
+            totalBills: bills.length,
+            totalBilled,
+            totalPaid,
+            totalRemaining,
+            paymentCount: paymentHistory.length,
+            status: totalRemaining <= 0 ? "Fully Paid"
+                : totalPaid > 0 ? "Partially Paid" : "Pending",
+        },
+    };
+};
+
+
+// =============================================================================
+// payDealerProjectPayment
+//
+//  ROUTE:  PUT /api/dealers/:phoneNumber/project/:projectNo/payment
+//  BODY:   { amount: 5000, method: "bank" }   (method is optional, default "cash")
+//
+//  Applies payment FIFO only to bills of THIS project from THIS dealer.
+//  Does NOT touch bills of other projects.
+//
+//  After applying:
+//    • Logs entry in dealerPayments collection (with projectNo stored)
+//    • Returns full updated payment log for this project
+// =============================================================================
+exports.payDealerProjectPayment = async (phoneNumber, projectNo, amount, method) => {
+    if (!phoneNumber) throw new Error("phoneNumber is required");
+    if (!projectNo) throw new Error("projectNo is required");
+    if (!amount || Number(amount) <= 0)
+        throw new Error("Valid positive amount is required");
+
+    const paymentAmount = Number(amount);
+    const paymentMethod = method || "cash";
+    const paymentDate = new Date();
+    const paymentDateISO = paymentDate.toISOString();
+    const displayDate = paymentDateISO.split("T")[0];   // "2026-03-14"
+
+    // ── DEDUP GUARD ───────────────────────────────────────────────────────────
+    // Prevent duplicate entries when Flutter calls the API twice
+    // (double tap, retry, or network timeout re-submit).
+    // Rule: same dealer + same project + same amount within last 60 seconds = duplicate
+    const oneMinuteAgo = new Date(paymentDate.getTime() - 60 * 1000).toISOString();
+    const dupSnap = await paymentsCollection
+        .where("dealerContact", "==", phoneNumber)
+        .where("projectNo", "==", projectNo)
+        .where("amountPaid", "==", paymentAmount)
+        .get();
+
+    if (!dupSnap.empty) {
+        // Check if any of these entries were created within the last 60 seconds
+        const recentDup = dupSnap.docs.find(doc => {
+            const docDate = doc.data().date || "";
+            return docDate >= oneMinuteAgo;
+        });
+
+        if (recentDup) {
+            // Duplicate call — return success without doing anything again
+            console.warn(`[payDealerProjectPayment] Duplicate payment blocked for ${phoneNumber} / ${projectNo} / ₹${paymentAmount}`);
+            return {
+                success: true,
+                duplicate: true,
+                projectNo,
+                message: "Duplicate payment request ignored",
+                logs: [{
+                    amount: paymentAmount,
+                    date: displayDate,
+                    method: paymentMethod,
+                }],
+            };
+        }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Fetch only bills for this dealer + this project
+    const snapshot = await materialReceivedCollection
+        .where("dealerContact", "==", phoneNumber)
+        .where("projectNo", "==", projectNo)
+        .get();
+
+    if (snapshot.empty) {
+        throw new Error(
+            `No bills found for dealer ${phoneNumber} on project ${projectNo}`
+        );
+    }
+
+    // Check there is actually something pending to pay
+    let totalPending = 0;
+    snapshot.forEach(doc => {
+        const d = doc.data();
+        totalPending += (Number(d.totalAmount) || 0) - (Number(d.paidAmount) || 0);
+    });
+
+    if (totalPending <= 0) {
+        throw new Error("All bills for this project are already fully paid");
+    }
+
+    // Sort bills FIFO — oldest first
+    const bills = [];
+    snapshot.forEach(doc => bills.push({ id: doc.id, ref: doc.ref, data: doc.data() }));
+    bills.sort((a, b) => new Date(a.data.createdAt || 0) - new Date(b.data.createdAt || 0));
+
+    // Apply payment FIFO across this project's bills only
+    let remaining = paymentAmount;
+    const updatedBills = [];
+
+    for (const bill of bills) {
+        if (remaining <= 0) break;
+
+        const oldPaid = Number(bill.data.paidAmount) || 0;
+        const total = Number(bill.data.totalAmount) || 0;
+        const pending = total - oldPaid;
+
+        if (pending <= 0) continue;   // already fully paid
+
+        const apply = Math.min(pending, remaining);
+        const newPaid = oldPaid + apply;
+        remaining -= apply;
+
+        updatedBills.push({ id: bill.id, ref: bill.ref, data: bill.data, newPaid });
+    }
+
+    // Batch-write updated paidAmount + dueAmount to materialReceived
+    const batch = db.batch();
+    for (const b of updatedBills) {
+        batch.update(b.ref, {
+            paidAmount: b.newPaid,
+            dueAmount: (Number(b.data.totalAmount) || 0) - b.newPaid,
+            updatedAt: paymentDateISO,
+        });
+    }
+    await batch.commit();
+
+    // ── ONE-TIME CLEANUP: fix stale cumulative entries from old upsert logic ──
+    // Old code stored cumulative paidAmount (e.g. 10500) as a single entry.
+    // New logic stores each payment separately (10000 + 500).
+    // If a cumulative entry exists where amount != initial paidAmount,
+    // reset it to the original paidAmount so the new entry adds correctly.
+    for (const b of updatedBills) {
+        try {
+            const oldPaid = Number(b.data.paidAmount) || 0;
+            if (oldPaid === 0) continue; // no previous payment, no cleanup needed
+
+            const expSnap = await siteExpensesCollection
+                .where("receiptId", "==", b.id)
+                .where("type", "==", "materialPayment")
+                .get();
+
+            if (!expSnap.empty) {
+                const existingAmount = Number(expSnap.docs[0].data().amount) || 0;
+                // If stored amount != oldPaid, it was a cumulative entry — fix it
+                if (existingAmount !== oldPaid) {
+                    await expSnap.docs[0].ref.update({
+                        amount: oldPaid,
+                        updatedAt: paymentDateISO,
+                        _note: "corrected from cumulative to per-payment tracking",
+                    });
+                }
+            }
+        } catch (cleanupErr) {
+            console.error(`[cleanup] receipt ${b.id}:`, cleanupErr.message);
+        }
+    }
+
+
+    // KEY RULE: Each payment = one new expense entry with ONLY that payment's amount.
+    //
+    // BEFORE (wrong): upsert — updates same entry 10000 → 10500
+    //   siteExpenses: [ { amount: 10500 } ]   ← one entry, total shown as 10500
+    //
+    // AFTER (correct): insert new — each payment gets its own entry
+    //   siteExpenses: [ { amount: 10000 }, { amount: 500 } ]
+    //   totalMaterialPayment = 10000 + 500 = 10500 ✅
+    //   expense screen shows two separate rows ✅
+    //
+    // b.appliedAmount = amount applied to THIS bill in THIS payment only
+    // (not the cumulative paidAmount total)
+    for (const b of updatedBills) {
+        try {
+            // appliedAmount = what was just paid NOW (not cumulative total)
+            const appliedAmount = b.newPaid - (Number(b.data.paidAmount) || 0);
+            if (appliedAmount <= 0) continue;
+
+            // Always insert a NEW expense entry — never update the old one
+            await siteExpensesCollection.add({
+                projectNo: b.data.projectNo,
+                amount: appliedAmount,             // ← THIS payment only (e.g. ₹500)
+                particular: `Material Payment – ${b.data.materialName}`,
+                remark: `Material Payment – ${b.data.materialName} (Receipt: ${b.id})`,
+                type: "materialPayment",
+                materialId: b.data.materialId,
+                dealerName: b.data.dealerName || "",
+                dealerContact: b.data.dealerContact || "",
+                receiptId: b.id,
+                date: paymentDateISO.split("T")[0],
+                createdAt: paymentDateISO,
+                method: paymentMethod,             // "cash" / "bank" / "UPI"
+            });
+        } catch (syncErr) {
+            // Log but do NOT fail the whole payment — money is already recorded
+            console.error(`[payDealerProjectPayment] siteExpense sync failed for receipt ${b.id}:`, syncErr.message);
+        }
+    }
+
+    // Log this payment in dealerPayments — WITH projectNo so it's queryable later
+    await paymentsCollection.add({
+        dealerContact: phoneNumber,
+        projectNo,
+        amountPaid: paymentAmount,
+        method: paymentMethod,
+        date: paymentDateISO,
+        type: "Payment",
+    });
+
+    // Fetch updated bills to build the full response log
+    const updatedSnap = await materialReceivedCollection
+        .where("dealerContact", "==", phoneNumber)
+        .where("projectNo", "==", projectNo)
+        .get();
+
+    const logs = [];
+    let newTotalPaid = 0;
+
+    updatedSnap.forEach(doc => {
+        const d = doc.data();
+        const paid = Number(d.paidAmount) || 0;
+        newTotalPaid += paid;
+        logs.push({
+            receiptId: doc.id,
+            materialName: d.materialName,
+            quantity: d.quantity || 0,
+            totalAmount: Number(d.totalAmount) || 0,
+            paidAmount: paid,
+            remainingAmount: (Number(d.totalAmount) || 0) - paid,
+            status: paid >= (Number(d.totalAmount) || 0)
+                ? "Fully Paid"
+                : paid > 0 ? "Partially Paid" : "Pending",
+        });
+    });
+
+    const totalBilled = logs.reduce((s, l) => s + l.totalAmount, 0);
+    const totalRemaining = totalBilled - newTotalPaid;
+
+    return {
+        success: true,
+        projectNo,
+        logs: [{
+            amount: paymentAmount,
+            date: displayDate,
+            method: paymentMethod,
+        }],
+        billBreakdown: logs,
+        summary: {
+            totalBilled,
+            totalPaid: newTotalPaid,
+            totalRemaining,
+            status: totalRemaining <= 0 ? "Fully Paid"
+                : newTotalPaid > 0 ? "Partially Paid" : "Pending",
+        },
+    };
 };

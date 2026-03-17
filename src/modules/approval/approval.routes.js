@@ -6,6 +6,12 @@ const { authorize } = require("../../middleware/role.middleware");
 
 const isAdmin = [verifyToken, authorize(["admin"])];
 
+// --- Work Status Options (Put SPECIFIC routes BEFORE general ones) --- //
+router.put("/work-status", isAdmin, approvalController.addWorkStatus);
+router.get("/work-status", approvalController.getWorkStatuses);
+router.put("/work-status/:id/confirm", isAdmin, approvalController.confirmWorkStatus);
+router.delete("/work-status/:id", isAdmin, approvalController.deleteWorkStatus);
+
 // --- Approval Management --- //
 router.post("/", isAdmin, approvalController.createApproval);
 router.get("/", isAdmin, approvalController.getApprovals);
@@ -29,12 +35,5 @@ router.delete("/expense/:expenseId", isAdmin, approvalController.deleteExpense);
 
 // --- Status Update --- //
 router.put("/:id/status", isAdmin, approvalController.updateStatus);
-
-
-router.post("/work-status", isAdmin, approvalController.addWorkStatus);
-router.put("/work-status/:id/confirm", isAdmin, approvalController.confirmWorkStatus);
-router.delete("/work-status/:id", isAdmin, approvalController.deleteWorkStatus);
-router.get("/work-status", approvalController.getWorkStatuses);
-
 
 module.exports = router;

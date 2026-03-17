@@ -8,25 +8,38 @@ const siteExpensesCollection = db.collection("siteExpenses");
 const advancesCollection = db.collection("advances");
 
 // ─── Shared Financial Helper ──────────────────────────────────────────────────
-// Single source of truth for advances + expenses.
-// Used by BOTH getProjectSummary and getFinancialHistory so numbers never differ.
 //
-// Logic:
-//   totalAdvance = SUM of all advances.amountReceived for this project
-//                 (if 0, fallback to project.paymentDetails.advancedPaid)
-//   totalExpense = SUM of all siteExpenses.amount for this project
-//   balance      = totalAdvance - totalExpense
+//  SINGLE SOURCE OF TRUTH — used by getProjectSummary AND getFinancialHistory.
+//  Numbers will NEVER differ between the two screens.
+//
+//  FINANCIAL LOGIC:
+//  ┌─────────────────────────────────────────────────────────────────────────┐
+//  │  totalAdvance        = SUM(advances.amountReceived)                     │
+//  │                        (fallback → project.paymentDetails.advancedPaid) │
+//  │                                                                         │
+//  │  siteExpenseTotal    = SUM(siteExpenses WHERE type ≠ "materialPayment") │
+//  │  materialPayTotal    = SUM(siteExpenses WHERE type  = "materialPayment") │
+//  │  totalExpense        = siteExpenseTotal + materialPayTotal               │
+//  │                                                                         │
+//  │  amountLeft (balance) = totalAdvance − totalExpense                     │
+//  └─────────────────────────────────────────────────────────────────────────┘
+//
+//  EXPENSE TYPES stored in siteExpenses:
+//    "materialPayment"  → auto-created by material_service when paidAmount > 0
+//    (anything else)    → manually entered site expenses
+//
 // ─────────────────────────────────────────────────────────────────────────────
 async function _getFinancials(projectNo, projectData) {
-    // Fetch both collections in parallel for speed
+    // Parallel fetch for performance
     const [advanceSnap, expenseSnap] = await Promise.all([
         advancesCollection.where("projectNo", "==", projectNo).get(),
         siteExpensesCollection.where("projectNo", "==", projectNo).get(),
     ]);
 
-    // Build advance history list
+    // ── 1. Build Advance history ──────────────────────────────────────────────
     const advances = [];
     let totalAdvance = 0;
+
     advanceSnap.forEach(doc => {
         const data = doc.data();
         const amount = Number(data.amountReceived) || 0;
@@ -43,7 +56,7 @@ async function _getFinancials(projectNo, projectData) {
         });
     });
 
-    // Fallback: if no dynamic advance entries yet, use the static field
+    // Fallback: no dynamic advances yet → use static field on project doc
     if (totalAdvance === 0 && projectData) {
         const staticAdvance = Number(projectData.paymentDetails?.advancedPaid) || 0;
         if (staticAdvance > 0) {
@@ -61,40 +74,65 @@ async function _getFinancials(projectNo, projectData) {
         }
     }
 
-    // Build expense history list
-    const expenses = [];
-    let totalExpense = 0;
+    // ── 2. Build Expense history (split by type) ──────────────────────────────
+    const siteExpenses = [];   // manual expenses entered by user
+    const materialPayments = [];   // auto-created from material paidAmount
+    let siteExpenseTotal = 0;
+    let materialPayTotal = 0;
+
     expenseSnap.forEach(doc => {
         const data = doc.data();
         const amount = Number(data.amount) || 0;
-        totalExpense += amount;
-        expenses.push({
+
+        const entry = {
             id: doc.id,
-            type: "Expense",
             amount,
-            remark: data.remark || data.particular || "Site Expense",
+            remark: data.remark || data.particular || "Expense",
+            particular: data.particular,
             date: data.date || data.createdAt?.split("T")[0],
             createdAt: data.createdAt,
-            particular: data.particular,
-        });
+            materialId: data.materialId || null,
+            receiptId: data.receiptId || null,
+        };
+
+        if (data.type === "materialPayment") {
+            // ── Material payment: advance paid to supplier ─────────────────
+            entry.type = "MaterialPayment";
+            entry.remark = data.remark || `Material Payment – ${data.particular || data.materialId}`;
+            materialPayTotal += amount;
+            materialPayments.push(entry);
+        } else {
+            // ── Regular site expense ───────────────────────────────────────
+            entry.type = "Expense";
+            siteExpenseTotal += amount;
+            siteExpenses.push(entry);
+        }
     });
 
+    // Combined expense list for history view (both types together)
+    const allExpenses = [...siteExpenses, ...materialPayments];
+    const totalExpense = siteExpenseTotal + materialPayTotal;
     const balance = totalAdvance - totalExpense;
 
-    // Combined history sorted latest first
-    const history = [...advances, ...expenses].sort((a, b) =>
+    // ── 3. Full combined timeline sorted latest-first ─────────────────────────
+    const history = [...advances, ...allExpenses].sort((a, b) =>
         new Date(b.createdAt || b.date) - new Date(a.createdAt || a.date)
     );
 
     return {
         totalAdvance,
-        totalExpense,
-        balance,
+        siteExpenseTotal,      // manual site expenses only
+        materialPayTotal,      // material supplier payments only
+        totalExpense,          // siteExpenseTotal + materialPayTotal
+        balance,               // amountLeft = totalAdvance − totalExpense
         advances,
-        expenses,
+        siteExpenses,
+        materialPayments,
+        expenses: allExpenses, // backward-compatible: all expenses combined
         history,
     };
 }
+
 
 // ─── Project CRUD ─────────────────────────────────────────────────────────────
 
@@ -145,18 +183,32 @@ exports.deleteProject = async (projectNo) => {
     return { message: "Project deleted successfully" };
 };
 
+
 // ─── Project Summary ──────────────────────────────────────────────────────────
-// Returns material stock + financial summary using the shared helper.
+//
+//  Returns:
+//    materialStock   – per-material received / used / stock breakdown
+//    financialSummary:
+//      totalMaterialPayment  – total paid to suppliers (from material receipts)
+//      totalSiteExpense      – total manual site expenses
+//      totalExpense          – sum of both above
+//      advancedPaid          – total advance received from client
+//      amountLeft            – advancedPaid − totalExpense
+//
 exports.getProjectSummary = async (projectNo) => {
     const docRef = projectsCollection.doc(projectNo);
     const doc = await docRef.get();
     if (!doc.exists) throw new Error("Project not found");
     const project = doc.data();
 
-    // Materials Received
-    const receivedSnap = await materialReceivedCollection
-        .where("projectNo", "==", projectNo).get();
+    // ── Material stock ────────────────────────────────────────────────────────
+    const [receivedSnap, usedSnap] = await Promise.all([
+        materialReceivedCollection.where("projectNo", "==", projectNo).get(),
+        materialUsedCollection.where("projectNo", "==", projectNo).get(),
+    ]);
+
     const receivedMap = {};
+
     receivedSnap.forEach(doc => {
         const data = doc.data();
         if (!receivedMap[data.materialId]) {
@@ -164,14 +216,15 @@ exports.getProjectSummary = async (projectNo) => {
                 materialName: data.materialName,
                 receivedQuantity: 0,
                 usedQuantity: 0,
+                totalAmount: 0,   // total value of material received
+                totalPaid: 0,   // total paid to supplier so far
             };
         }
         receivedMap[data.materialId].receivedQuantity += Number(data.quantity) || 0;
+        receivedMap[data.materialId].totalAmount += Number(data.totalAmount) || 0;
+        receivedMap[data.materialId].totalPaid += Number(data.paidAmount) || 0;
     });
 
-    // Materials Used
-    const usedSnap = await materialUsedCollection
-        .where("projectNo", "==", projectNo).get();
     usedSnap.forEach(doc => {
         const data = doc.data();
         if (!receivedMap[data.materialId]) {
@@ -179,6 +232,8 @@ exports.getProjectSummary = async (projectNo) => {
                 materialName: data.materialName,
                 receivedQuantity: 0,
                 usedQuantity: 0,
+                totalAmount: 0,
+                totalPaid: 0,
             };
         }
         receivedMap[data.materialId].usedQuantity += Number(data.quantityUsed) || 0;
@@ -189,43 +244,56 @@ exports.getProjectSummary = async (projectNo) => {
         receivedQuantity: m.receivedQuantity,
         usedQuantity: m.usedQuantity,
         stock: m.receivedQuantity - m.usedQuantity,
+        totalAmount: m.totalAmount,
+        totalPaid: m.totalPaid,
+        dueAmount: m.totalAmount - m.totalPaid,  // still owed to supplier
     }));
 
-    // ── Use shared financial helper (same logic as getFinancialHistory) ──
+    // ── Financial summary via shared helper ───────────────────────────────────
     const financials = await _getFinancials(projectNo, project);
 
     return {
         projectDetails: project,
         materialStock,
         financialSummary: {
-            totalSiteExpense: financials.totalExpense,
+            // ── Expense breakdown ──────────────────────────────────────────
+            totalMaterialPayment: financials.materialPayTotal,  // paid to suppliers
+            totalSiteExpense: financials.siteExpenseTotal,  // manual site expenses
+            totalExpense: financials.totalExpense,      // combined total
+            // ── Advance & balance ──────────────────────────────────────────
             advancedPaid: financials.totalAdvance,
-            remainingBalance: financials.balance,
+            amountLeft: financials.balance,           // advance − totalExpense
         },
     };
 };
 
+
 // ─── Financial History ────────────────────────────────────────────────────────
-// Returns full advance + expense history using the shared helper.
+//
+//  Returns the full timeline of advances, site expenses, and material payments.
+//  The `summary` block mirrors the numbers shown on the Project Summary screen.
+//
 exports.getFinancialHistory = async (projectNo) => {
     if (!projectNo) throw new Error("projectNo is required");
 
-    // Fetch project data for the static-advance fallback
     const projectDoc = await projectsCollection.doc(projectNo).get();
     const projectData = projectDoc.exists ? projectDoc.data() : null;
 
-    // ── Use shared financial helper ──
     const financials = await _getFinancials(projectNo, projectData);
 
     return {
         projectNo,
         summary: {
             totalAdvance: financials.totalAdvance,
+            totalMaterialPayment: financials.materialPayTotal,
+            totalSiteExpense: financials.siteExpenseTotal,
             totalExpense: financials.totalExpense,
-            balance: financials.balance,
+            amountLeft: financials.balance,     // ← this is what Flutter shows as "Amount Left"
         },
-        history: financials.history,
+        history: financials.history,          // combined timeline, latest first
         advances: financials.advances,
-        expenses: financials.expenses,
+        siteExpenses: financials.siteExpenses,     // manual expenses only
+        materialPayments: financials.materialPayments, // auto-expenses from material receipts
+        expenses: financials.expenses,         // all expenses combined (backward-compat)
     };
 };

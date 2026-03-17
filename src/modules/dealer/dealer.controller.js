@@ -1,40 +1,93 @@
 const dealerService = require("./dealer.service");
 
-exports.getDealerHistory = async (req, res, next) => {
+// ─── 1. Get all dealers ───────────────────────────────────────────────────────
+// GET /api/dealers
+exports.getAllDealers = async (req, res) => {
+    try {
+        const result = await dealerService.getAllDealers();
+        res.status(200).json({ success: true, data: result });
+    } catch (error) {
+        res.status(400).json({ success: false, error: error.message });
+    }
+};
+
+// ─── 2. Get dealer detail — per-project cards ─────────────────────────────────
+// GET /api/dealers/:phoneNumber
+exports.getDealerHistory = async (req, res) => {
     try {
         const result = await dealerService.getDealerHistory(req.params.phoneNumber);
         res.status(200).json({ success: true, data: result });
     } catch (error) {
-        res.status(404).json({ success: false, message: error.message });
+        res.status(400).json({ success: false, error: error.message });
     }
 };
 
-exports.getAllDealers = async (req, res, next) => {
+// ─── 3. Get bill-level payment status for a dealer ───────────────────────────
+// GET /api/dealers/:phoneNumber/payments
+exports.getDealerPaymentHistory = async (req, res) => {
     try {
-        const dealers = await dealerService.getAllDealers();
-        res.status(200).json({ success: true, data: dealers });
-    } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
-    }
-};
-
-exports.getDealerPaymentHistory = async (req, res, next) => {
-    try {
-        const { phoneNumber } = req.params;
-        const result = await dealerService.getDealerPaymentHistory(phoneNumber);
+        const result = await dealerService.getDealerPaymentHistory(req.params.phoneNumber);
         res.status(200).json({ success: true, data: result });
     } catch (error) {
-        res.status(404).json({ success: false, message: error.message });
+        res.status(400).json({ success: false, error: error.message });
     }
 };
 
-exports.updateDealerPayment = async (req, res, next) => {
+// ─── 4. Get full payment log for a dealer (date + amount history) ─────────────
+// GET /api/dealers/:phoneNumber/payment-log
+exports.getDealerPaymentLog = async (req, res) => {
     try {
-        const { amountPaid } = req.body;
-        const { phoneNumber } = req.params;
-        const result = await dealerService.updateDealerPayment(phoneNumber, amountPaid);
+        const result = await dealerService.getDealerPaymentLog(req.params.phoneNumber);
         res.status(200).json({ success: true, data: result });
     } catch (error) {
-        res.status(400).json({ success: false, message: error.message });
+        res.status(400).json({ success: false, error: error.message });
+    }
+};
+
+// ─── 5. Get payment log for a specific project under a dealer ─────────────────
+// GET /api/dealers/:phoneNumber/project/:projectNo/payment-log
+exports.getDealerProjectPaymentLog = async (req, res) => {
+    try {
+        const result = await dealerService.getDealerProjectPaymentLog(
+            req.params.phoneNumber,
+            req.params.projectNo
+        );
+        res.status(200).json({ success: true, data: result });
+    } catch (error) {
+        res.status(400).json({ success: false, error: error.message });
+    }
+};
+
+// ─── 6. Apply payment to a specific project under a dealer (FIFO) ────────────
+// PUT /api/dealers/:phoneNumber/project/:projectNo/payment
+// Body: { amount: 5000, method: "bank" }
+exports.payDealerProjectPayment = async (req, res) => {
+    try {
+        const { phoneNumber, projectNo } = req.params;
+        const { amount, method } = req.body;
+        const result = await dealerService.payDealerProjectPayment(
+            phoneNumber,
+            projectNo,
+            amount,
+            method
+        );
+        res.status(200).json(result);   // already has success: true from service
+    } catch (error) {
+        res.status(400).json({ success: false, error: error.message });
+    }
+};
+
+// ─── 7. Apply payment across ALL projects for a dealer (FIFO) ────────────────
+// PUT /api/dealers/:phoneNumber/payment
+// Body: { amountPaid: 5000 }
+exports.updateDealerPayment = async (req, res) => {
+    try {
+        const result = await dealerService.updateDealerPayment(
+            req.params.phoneNumber,
+            req.body.amountPaid
+        );
+        res.status(200).json({ success: true, data: result });
+    } catch (error) {
+        res.status(400).json({ success: false, error: error.message });
     }
 };

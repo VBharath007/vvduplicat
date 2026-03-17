@@ -6,8 +6,91 @@ const materialUsedCollection = db.collection("materialUsed");
 const stockCollection = db.collection("stock");
 const materialRequiredCollection = db.collection("materialRequired");
 const materialPlanCollection = db.collection("materialPlan");
+const siteExpensesCollection = db.collection("siteExpenses"); // ← NEW: needed for auto-expense on material payment
 
-// --- Material Master --- //
+// ─────────────────────────────────────────────────────────────────────────────
+// INTERNAL HELPER: Auto-create / update / delete a siteExpense entry that
+// mirrors the paidAmount on a material receipt.
+//
+//  WHY: When the user receives materials and pays the supplier upfront
+//       (paidAmount > 0), that payment IS a site expense. Recording it here
+//       automatically keeps the financial summary accurate without requiring
+//       the user to manually enter it again in the expense screen.
+//
+//  HOW IT IS LINKED:
+//       siteExpenses doc gets   → type       : "materialPayment"
+//                               → receiptId  : <materialReceived doc id>
+//                               → materialId : <materialId>
+//  This link lets us UPDATE or DELETE the expense when the receipt changes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Create a siteExpense for the material payment (paidAmount).
+ * Called only when paidAmount > 0.
+ */
+async function _createMaterialExpense(receiptId, receivedData, paidAmount) {
+    const expenseData = {
+        projectNo: receivedData.projectNo,
+        amount: paidAmount,
+        particular: `Material Payment – ${receivedData.materialName}`,
+        remark: `Material Payment – ${receivedData.materialName} (Receipt: ${receiptId})`,
+        type: "materialPayment",   // distinguishes from manual site expenses
+        materialId: receivedData.materialId,
+        receiptId: receiptId,           // FK back to materialReceived doc
+        date: receivedData.date,
+        createdAt: new Date().toISOString(),
+    };
+
+    // Recalculate pastExpense from DB (same pattern as createExpense)
+    const snap = await siteExpensesCollection
+        .where("projectNo", "==", receivedData.projectNo).get();
+    let totalPrevious = 0;
+    snap.forEach(doc => { totalPrevious += Number(doc.data().amount) || 0; });
+    expenseData.pastExpense = totalPrevious;
+
+    await siteExpensesCollection.add(expenseData);
+}
+
+/**
+ * Update the linked siteExpense when paidAmount changes on a receipt.
+ * If newPaidAmount = 0, the expense entry is deleted entirely.
+ */
+async function _updateMaterialExpense(receiptId, newPaidAmount) {
+    const snap = await siteExpensesCollection
+        .where("receiptId", "==", receiptId)
+        .where("type", "==", "materialPayment")
+        .get();
+
+    if (snap.empty) return; // nothing to update
+
+    const expenseRef = snap.docs[0].ref;
+
+    if (newPaidAmount <= 0) {
+        await expenseRef.delete();
+    } else {
+        await expenseRef.update({
+            amount: newPaidAmount,
+            updatedAt: new Date().toISOString(),
+        });
+    }
+}
+
+/**
+ * Delete the linked siteExpense when a material receipt is deleted.
+ */
+async function _deleteMaterialExpense(receiptId) {
+    const snap = await siteExpensesCollection
+        .where("receiptId", "==", receiptId)
+        .where("type", "==", "materialPayment")
+        .get();
+
+    const deletes = snap.docs.map(doc => doc.ref.delete());
+    await Promise.all(deletes);
+}
+
+
+// ─── Material Master ──────────────────────────────────────────────────────────
+
 exports.createMaterial = async (materialData) => {
     if (!materialData.materialId) throw new Error("materialId is required");
     const docRef = materialsCollection.doc(materialData.materialId);
@@ -24,32 +107,33 @@ exports.getMaterials = async () => {
     return materials;
 };
 
-// --- Material Received --- //
+
+// ─── Material Received ────────────────────────────────────────────────────────
+
 exports.recordMaterialReceived = async (receivedData) => {
     if (!receivedData.projectNo || !receivedData.materialId)
         throw new Error("projectNo and materialId are required");
     if (!receivedData.materialName)
         throw new Error("materialName is required");
 
+    // ── Name-consistency check across stock ──────────────────────────────────
     const stockId = `${receivedData.projectNo}_${receivedData.materialId}`;
     const stockRef = stockCollection.doc(stockId);
     const stockDoc = await stockRef.get();
 
     if (stockDoc.exists) {
-        const existingMaterialName = stockDoc.data().materialName;
-        if (existingMaterialName.toLowerCase() !== receivedData.materialName.toLowerCase()) {
+        const existingName = stockDoc.data().materialName;
+        if (existingName.toLowerCase() !== receivedData.materialName.toLowerCase()) {
             throw new Error(
-                `You already purchased material ID '${receivedData.materialId}' with name '${existingMaterialName}'. To purchase '${receivedData.materialName}', please use a different material ID (e.g., MAT002).`
+                `Material ID '${receivedData.materialId}' was already purchased as '${existingName}'. ` +
+                `To add '${receivedData.materialName}' use a different material ID (e.g. MAT002).`
             );
         }
     }
 
-    // ─── DEDUP GUARD ─────────────────────────────────────────────────────────
-    // Prevent re-saving the same receipt when Flutter re-submits existing
-    // records (e.g. on edit save). Check: same project + material + date +
-    // quantity within a 2-minute window → return existing record, skip insert.
-    const receiptDate = receivedData.date ||
-        new Date().toISOString().split("T")[0];
+    // ── Dedup guard ───────────────────────────────────────────────────────────
+    // Same project + material + date + quantity within the same day → skip insert.
+    const receiptDate = receivedData.date || new Date().toISOString().split("T")[0];
     const quantity = Number(receivedData.quantity) || 0;
 
     const dupSnap = await materialReceivedCollection
@@ -60,25 +144,32 @@ exports.recordMaterialReceived = async (receivedData) => {
         .get();
 
     if (!dupSnap.empty) {
-        // Already saved — return the existing record without touching stock
         const existing = dupSnap.docs[0];
         return { receiptId: existing.id, ...existing.data() };
     }
-    // ─────────────────────────────────────────────────────────────────────────
+
+    // ── Prepare & save the receipt ────────────────────────────────────────────
+    const rate = Number(receivedData.rate) || 0;
+    const paidAmount = Number(receivedData.paidAmount) || 0;
+    const totalAmount = quantity * rate;
 
     receivedData.createdAt = new Date().toISOString();
     receivedData.date = receiptDate;
-    const rate = Number(receivedData.rate) || 0;
-    receivedData.totalAmount = quantity * rate;
-    receivedData.paidAmount = Number(receivedData.paidAmount) || 0;
+    receivedData.quantity = quantity;
+    receivedData.rate = rate;
+    receivedData.totalAmount = totalAmount;   // full value of this receipt
+    receivedData.paidAmount = paidAmount;    // amount already paid (advance to supplier)
+    receivedData.dueAmount = totalAmount - paidAmount; // outstanding due to supplier
 
     const docRef = await materialReceivedCollection.add(receivedData);
+    const receiptId = docRef.id;
 
+    // ── Update / create stock ─────────────────────────────────────────────────
     if (stockDoc.exists) {
-        const currentStock = stockDoc.data();
+        const s = stockDoc.data();
         await stockRef.update({
-            receivedQuantity: (currentStock.receivedQuantity || 0) + quantity,
-            stock: (currentStock.stock || 0) + quantity
+            receivedQuantity: (s.receivedQuantity || 0) + quantity,
+            stock: (s.stock || 0) + quantity,
         });
     } else {
         await stockRef.set({
@@ -87,12 +178,22 @@ exports.recordMaterialReceived = async (receivedData) => {
             materialName: receivedData.materialName,
             receivedQuantity: quantity,
             usedQuantity: 0,
-            stock: quantity
+            stock: quantity,
         });
     }
 
-    return { receiptId: docRef.id, ...receivedData };
+    // ── AUTO-CREATE SITE EXPENSE for the paid amount ──────────────────────────
+    // If the user paid any advance to the supplier at the time of receipt,
+    // record it automatically as a siteExpense (type = "materialPayment").
+    // This ensures the financial summary deducts it from the project advance
+    // without the user having to enter it separately.
+    if (paidAmount > 0) {
+        await _createMaterialExpense(receiptId, receivedData, paidAmount);
+    }
+
+    return { receiptId, ...receivedData };
 };
+
 
 exports.getMaterialReceived = async (projectNo) => {
     let query = materialReceivedCollection;
@@ -103,6 +204,7 @@ exports.getMaterialReceived = async (projectNo) => {
     return received;
 };
 
+
 exports.getMaterialReceivedByMaterialId = async (materialId) => {
     const snapshot = await materialReceivedCollection
         .where("materialId", "==", materialId).get();
@@ -111,15 +213,49 @@ exports.getMaterialReceivedByMaterialId = async (materialId) => {
     return snapshot.docs.map(doc => ({ receiptId: doc.id, ...doc.data() }));
 };
 
+
 exports.updateReceiptPayment = async (receiptId, paymentData) => {
     const docRef = materialReceivedCollection.doc(receiptId);
     const doc = await docRef.get();
     if (!doc.exists) throw new Error("Receipt not found");
+
     const newPaidAmount = Number(paymentData.paidAmount) || 0;
-    await docRef.update({ paidAmount: newPaidAmount });
+    const oldData = doc.data();
+    const totalAmount = Number(oldData.totalAmount) || 0;
+
+    await docRef.update({
+        paidAmount: newPaidAmount,
+        dueAmount: totalAmount - newPaidAmount,
+    });
+
+    // ── Sync the linked siteExpense ───────────────────────────────────────────
+    // If there's already an auto-expense for this receipt → update its amount.
+    // If paidAmount is now > 0 and no expense exists yet → create it.
+    // If paidAmount is 0 → delete the expense.
+    const existingExpSnap = await siteExpensesCollection
+        .where("receiptId", "==", receiptId)
+        .where("type", "==", "materialPayment")
+        .get();
+
+    if (newPaidAmount > 0) {
+        if (existingExpSnap.empty) {
+            await _createMaterialExpense(receiptId, oldData, newPaidAmount);
+        } else {
+            await existingExpSnap.docs[0].ref.update({
+                amount: newPaidAmount,
+                updatedAt: new Date().toISOString(),
+            });
+        }
+    } else {
+        // paidAmount set to 0 → remove the expense entry
+        const deletes = existingExpSnap.docs.map(d => d.ref.delete());
+        await Promise.all(deletes);
+    }
+
     const updatedDoc = await docRef.get();
     return { receiptId: updatedDoc.id, ...updatedDoc.data() };
 };
+
 
 exports.updateMaterialReceived = async (receiptId, updateData) => {
     const docRef = materialReceivedCollection.doc(receiptId);
@@ -128,39 +264,87 @@ exports.updateMaterialReceived = async (receiptId, updateData) => {
 
     const oldData = doc.data();
     const existingQty = Number(oldData.quantity) || 0;
-    const addedQty = Number(updateData.quantity) || 0; // The NEW quantity being added
-    const newQty = existingQty + addedQty; // Sum of old and new
+    const addedQty = Number(updateData.quantity) || 0;  // additional qty being added
+    const newQty = existingQty + addedQty;
 
-    const currentRate = updateData.rate !== undefined ? Number(updateData.rate) : (Number(oldData.rate) || 0);
+    const currentRate = updateData.rate !== undefined
+        ? Number(updateData.rate)
+        : (Number(oldData.rate) || 0);
 
-    // Update derived fields
+    const newTotalAmount = newQty * currentRate;
+    const newPaidAmount = updateData.paidAmount !== undefined
+        ? Number(updateData.paidAmount)
+        : (Number(oldData.paidAmount) || 0);
+
     const updatedRecord = {
         ...updateData,
         quantity: newQty,
-        totalAmount: newQty * currentRate,
-        updatedAt: new Date().toISOString()
+        totalAmount: newTotalAmount,
+        paidAmount: newPaidAmount,
+        dueAmount: newTotalAmount - newPaidAmount,
+        updatedAt: new Date().toISOString(),
     };
 
-    // Handle Stock Update (Additive)
+    // ── Stock update (additive) ───────────────────────────────────────────────
     if (addedQty !== 0) {
         const stockId = `${oldData.projectNo}_${oldData.materialId}`;
         const stockRef = stockCollection.doc(stockId);
         const stockDoc = await stockRef.get();
         if (stockDoc.exists) {
-            const currentStock = stockDoc.data();
+            const s = stockDoc.data();
             await stockRef.update({
-                receivedQuantity: (currentStock.receivedQuantity || 0) + addedQty,
-                stock: (currentStock.stock || 0) + addedQty
+                receivedQuantity: (s.receivedQuantity || 0) + addedQty,
+                stock: (s.stock || 0) + addedQty,
             });
         }
     }
 
     await docRef.update(updatedRecord);
+
+    // ── Sync linked siteExpense if paidAmount changed ─────────────────────────
+    if (newPaidAmount !== (Number(oldData.paidAmount) || 0)) {
+        await _updateMaterialExpense(receiptId, newPaidAmount);
+    }
+
     const updatedDoc = await docRef.get();
     return { receiptId: updatedDoc.id, ...updatedDoc.data() };
 };
 
-// --- Material Used --- //
+
+/**
+ * Delete a material receipt AND the auto-generated siteExpense linked to it.
+ * Also restores stock.
+ */
+exports.deleteMaterialReceived = async (receiptId) => {
+    const docRef = materialReceivedCollection.doc(receiptId);
+    const doc = await docRef.get();
+    if (!doc.exists) throw new Error("Receipt not found");
+
+    const data = doc.data();
+    const quantity = Number(data.quantity) || 0;
+    const stockId = `${data.projectNo}_${data.materialId}`;
+    const stockRef = stockCollection.doc(stockId);
+    const stockDoc = await stockRef.get();
+
+    // Restore stock
+    if (stockDoc.exists && quantity > 0) {
+        const s = stockDoc.data();
+        await stockRef.update({
+            receivedQuantity: Math.max(0, (s.receivedQuantity || 0) - quantity),
+            stock: Math.max(0, (s.stock || 0) - quantity),
+        });
+    }
+
+    // Remove linked material payment expense
+    await _deleteMaterialExpense(receiptId);
+
+    await docRef.delete();
+    return { message: "Material receipt deleted and stock/expense restored", receiptId };
+};
+
+
+// ─── Material Used ────────────────────────────────────────────────────────────
+
 exports.recordMaterialUsed = async (usedData) => {
     if (!usedData.projectNo || !usedData.materialId)
         throw new Error("projectNo and materialId are required");
@@ -174,7 +358,7 @@ exports.recordMaterialUsed = async (usedData) => {
 
     if (!stockDoc.exists) {
         throw new Error(
-            `Material '${usedData.materialId}' has not been purchased/received for project '${usedData.projectNo}'. Please receive the material first.`
+            `Material '${usedData.materialId}' has not been received for project '${usedData.projectNo}'. Please receive the material first.`
         );
     }
 
@@ -183,12 +367,11 @@ exports.recordMaterialUsed = async (usedData) => {
     if (usedData.materialName &&
         currentStock.materialName.toLowerCase() !== usedData.materialName.toLowerCase()) {
         throw new Error(
-            `Material ID '${usedData.materialId}' was purchased as '${currentStock.materialName}', not '${usedData.materialName}'. Please use the correct material name.`
+            `Material ID '${usedData.materialId}' was received as '${currentStock.materialName}', not '${usedData.materialName}'.`
         );
     }
 
-    // ─── DEDUP GUARD ─────────────────────────────────────────────────────────
-    // Prevent double-save: same project + material + date + qty → return existing.
+    // Dedup guard
     const usedDate = usedData.date ||
         (usedData.usedDate
             ? usedData.usedDate.substring(0, 10)
@@ -202,11 +385,9 @@ exports.recordMaterialUsed = async (usedData) => {
         .get();
 
     if (!dupSnap.empty) {
-        // Already saved — do NOT touch stock again
         const existing = dupSnap.docs[0];
         return { usageId: existing.id, ...existing.data() };
     }
-    // ─────────────────────────────────────────────────────────────────────────
 
     const availableStock = Number(currentStock.stock) || 0;
     if (qtyUsed > availableStock) {
@@ -222,18 +403,13 @@ exports.recordMaterialUsed = async (usedData) => {
 
     await stockRef.update({
         usedQuantity: (currentStock.usedQuantity || 0) + qtyUsed,
-        stock: availableStock - qtyUsed
+        stock: availableStock - qtyUsed,
     });
 
     return { usageId: docRef.id, ...usedData };
 };
 
-/**
- * UPDATE a material-used record.
- * Stock adjusts by DIFFERENCE only (not full re-deduction).
- *   old qty=5, new qty=8  →  stock decreases by 3 more
- *   old qty=5, new qty=3  →  stock increases by 2 (returned)
- */
+
 exports.updateMaterialUsed = async (usageId, updateData) => {
     const docRef = materialUsedCollection.doc(usageId);
     const doc = await docRef.get();
@@ -249,19 +425,19 @@ exports.updateMaterialUsed = async (usageId, updateData) => {
         const stockDoc = await stockRef.get();
 
         if (stockDoc.exists) {
-            const currentStock = stockDoc.data();
-            const diff = newQty - oldQty; // +ve = more used, -ve = returned
-            const newAvailable = (Number(currentStock.stock) || 0) - diff;
+            const s = stockDoc.data();
+            const diff = newQty - oldQty;          // +ve = more used, -ve = returned
+            const newAvailable = (Number(s.stock) || 0) - diff;
 
             if (newAvailable < 0) {
                 throw new Error(
-                    `Insufficient stock. Available: ${currentStock.stock}, Extra needed: ${diff}`
+                    `Insufficient stock. Available: ${s.stock}, Extra needed: ${diff}`
                 );
             }
 
             await stockRef.update({
-                usedQuantity: (Number(currentStock.usedQuantity) || 0) + diff,
-                stock: newAvailable
+                usedQuantity: (Number(s.usedQuantity) || 0) + diff,
+                stock: newAvailable,
             });
         }
     }
@@ -271,7 +447,33 @@ exports.updateMaterialUsed = async (usageId, updateData) => {
     return { usageId: updatedDoc.id, ...updatedDoc.data() };
 };
 
-// --- Material Stock --- //
+
+exports.deleteMaterialUsed = async (usageId) => {
+    const docRef = materialUsedCollection.doc(usageId);
+    const doc = await docRef.get();
+    if (!doc.exists) throw new Error("Material used record not found");
+
+    const data = doc.data();
+    const qtyUsed = Number(data.quantityUsed) || 0;
+    const stockId = `${data.projectNo}_${data.materialId}`;
+    const stockRef = stockCollection.doc(stockId);
+    const stockDoc = await stockRef.get();
+
+    if (stockDoc.exists && qtyUsed > 0) {
+        const s = stockDoc.data();
+        await stockRef.update({
+            usedQuantity: Math.max(0, (Number(s.usedQuantity) || 0) - qtyUsed),
+            stock: (Number(s.stock) || 0) + qtyUsed,
+        });
+    }
+
+    await docRef.delete();
+    return { message: "Material used record deleted and stock restored", usageId };
+};
+
+
+// ─── Material Stock ───────────────────────────────────────────────────────────
+
 exports.getMaterialStock = async (projectNo) => {
     let snap;
     if (projectNo) {
@@ -282,7 +484,9 @@ exports.getMaterialStock = async (projectNo) => {
     return snap.docs.map(doc => doc.data());
 };
 
-// --- Material Required --- //
+
+// ─── Material Required ────────────────────────────────────────────────────────
+
 exports.addMaterialRequired = async (data) => {
     if (!data.projectNo || !data.materialId)
         throw new Error("projectNo and materialId are required");
@@ -291,13 +495,6 @@ exports.addMaterialRequired = async (data) => {
 
     const qty = Number(data.requiredQuantity) || 0;
     if (qty <= 0) throw new Error("requiredQuantity must be a positive number");
-
-    // BUG FIX: Removed the block that was updating the stock collection.
-    // materialRequired = "what we NEED to buy in future".
-    // It should NEVER touch the stock collection.
-    // Stock is only updated by: recordMaterialReceived and recordMaterialUsed.
-    // The old code was adding requiredQuantity to stock every time the user
-    // added a required material entry → stock inflated incorrectly (240kg, 280kg shown).
 
     // Upsert: one record per projectNo + materialId
     const existingSnap = await materialRequiredCollection
@@ -314,7 +511,7 @@ exports.addMaterialRequired = async (data) => {
         newRequiredQuantity = currentQty + qty;
         await existingDoc.ref.update({
             requiredQuantity: newRequiredQuantity,
-            updatedAt: new Date().toISOString()
+            updatedAt: new Date().toISOString(),
         });
         requiredDocId = existingDoc.id;
     } else {
@@ -330,31 +527,8 @@ exports.addMaterialRequired = async (data) => {
         projectNo: data.projectNo,
         materialId: data.materialId,
         materialName: data.materialName,
-        requiredQuantity: newRequiredQuantity
+        requiredQuantity: newRequiredQuantity,
     };
-};
-
-exports.deleteMaterialUsed = async (usageId) => {
-    const docRef = materialUsedCollection.doc(usageId);
-    const doc = await docRef.get();
-    if (!doc.exists) throw new Error("Material used record not found");
-
-    const data = doc.data();
-    const qtyUsed = Number(data.quantityUsed) || 0;
-
-    const stockId = `${data.projectNo}_${data.materialId}`;
-    const stockRef = stockCollection.doc(stockId);
-    const stockDoc = await stockRef.get();
-    if (stockDoc.exists && qtyUsed > 0) {
-        const currentStock = stockDoc.data();
-        await stockRef.update({
-            usedQuantity: Math.max(0, (Number(currentStock.usedQuantity) || 0) - qtyUsed),
-            stock: (Number(currentStock.stock) || 0) + qtyUsed
-        });
-    }
-
-    await docRef.delete();
-    return { message: "Material used record deleted and stock restored", usageId };
 };
 
 
@@ -363,26 +537,27 @@ exports.getAllMaterialRequired = async () => {
     return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 };
 
-exports.getMaterialRequired = async (projectNo) => {
-    const planSnap = await materialPlanCollection
-        .where("projectNo", "==", projectNo).get();
-    const stockSnap = await stockCollection
-        .where("projectNo", "==", projectNo).get();
 
-    const plans = planSnap.docs.map(doc => doc.data());
+exports.getMaterialRequired = async (projectNo) => {
+    const [planSnap, stockSnap] = await Promise.all([
+        materialPlanCollection.where("projectNo", "==", projectNo).get(),
+        stockCollection.where("projectNo", "==", projectNo).get(),
+    ]);
+
     const stocks = stockSnap.docs.map(doc => doc.data());
 
-    return plans.map(plan => {
+    return planSnap.docs.map(doc => {
+        const plan = doc.data();
         const stockItem = stocks.find(s => s.materialId === plan.materialId);
         const stock = stockItem ? stockItem.stock : 0;
-        const plannedQuantity = Number(plan.plannedQuantity) || 0;
-        const required = plannedQuantity - stock;
+        const plannedQty = Number(plan.plannedQuantity) || 0;
+        const required = plannedQty - stock;
         return {
             materialId: plan.materialId,
             materialName: plan.materialName,
-            plannedQuantity,
+            plannedQuantity: plannedQty,
             stock,
-            materialRequired: required > 0 ? required : 0
+            materialRequired: required > 0 ? required : 0,
         };
     });
 };
