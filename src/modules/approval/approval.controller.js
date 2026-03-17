@@ -3,7 +3,7 @@ const { db } = require("../../config/firebase");
 const approvalsCollection = db.collection("approvals");
 const approvalAdvancesCollection = db.collection("approvalAdvances");
 const approvalExpensesCollection = db.collection("approvalExpenses");
-const workStatusCollection = db.collection("workStatusOptions");
+const projectTypeCollection = db.collection("projectTypeOptions");
 
 
 exports.createApproval = async (req, res) => {
@@ -297,36 +297,36 @@ exports.updateTotalFees = async (req, res) => {
 };
 
 
-exports.addWorkStatus = async (req, res) => {
+exports.addProjectType = async (req, res) => {
     try {
-        const result = await approvalService.addWorkStatus(req.body.name);
+        const result = await approvalService.addProjectType(req.body.name);
         res.status(200).json(result);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 };
 
-exports.confirmWorkStatus = async (req, res) => {
+exports.confirmProjectType = async (req, res) => {
     try {
-        const result = await approvalService.confirmWorkStatus(req.params.id);
+        const result = await approvalService.confirmProjectType(req.params.id);
         res.status(200).json(result);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 };
 
-exports.deleteWorkStatus = async (req, res) => {
+exports.deleteProjectType = async (req, res) => {
     try {
-        const result = await approvalService.deleteWorkStatus(req.params.id);
+        const result = await approvalService.deleteProjectType(req.params.id);
         res.status(200).json(result);
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 };
 
-exports.getWorkStatuses = async (req, res) => {
+exports.getProjectTypes = async (req, res) => {
     try {
-        const result = await approvalService.getWorkStatuses();
+        const result = await approvalService.getProjectTypes();
         res.status(200).json(result);
     } catch (error) {
         res.status(500).json({ error: error.message });

@@ -4,10 +4,10 @@ const dayjs = require("dayjs");
 const approvalsCollection = db.collection("approvals");
 const approvalAdvancesCollection = db.collection("approvalAdvances");
 const approvalExpensesCollection = db.collection("approvalExpenses");
-const workStatusCollection = db.collection("workStatusOptions");
+const projectTypeCollection = db.collection("projectTypeOptions");
 
 
-const DEFAULT_WORK_STATUSES = [
+const DEFAULT_PROJECT_TYPE = [
     "DTCP - SINGLE PLOT",
     "DTCP - LAYOUT",
     "LPA - COMMERCIAL",
@@ -28,16 +28,16 @@ const DEFAULT_WORK_STATUSES = [
 
 const getCurrentDate = () => dayjs().format("DD-MM-YYYY");
 
-// Initialize default statuses if they don't exist
-const initializeWorkStatuses = async () => {
+// Initialize default types if they don't exist
+const initializeProjectTypes = async () => {
     try {
-        const snap = await workStatusCollection.get();
+        const snap = await projectTypeCollection.get();
         if (snap.empty) {
             const batch = db.batch();
-            DEFAULT_WORK_STATUSES.forEach(status => {
-                const docRef = workStatusCollection.doc();
-                batch.set(docRef, { 
-                    name: status.toUpperCase(),
+            DEFAULT_PROJECT_TYPE.forEach(type => {
+                const docRef = projectTypeCollection.doc();
+                batch.set(docRef, {
+                    name: type.toUpperCase(),
                     status: "approved",
                     createdAt: new Date().toISOString()
                 });
@@ -45,12 +45,12 @@ const initializeWorkStatuses = async () => {
             await batch.commit();
         }
     } catch (error) {
-        console.error("Failed to initialize work statuses:", error);
+        console.error("Failed to initialize project types:", error);
     }
 };
 
 // Call initialization
-initializeWorkStatuses();
+initializeProjectTypes();
 
 // Utility function to get calculations
 const getApprovalCalculations = async (approvalId, totalFees) => {
@@ -79,13 +79,13 @@ const getApprovalCalculations = async (approvalId, totalFees) => {
     };
 };
 
-const ensureWorkStatusExists = async (status) => {
-    if (!status) return;
-    const upperStatus = status.toUpperCase();
-    const snap = await workStatusCollection.where("name", "==", upperStatus).get();
+const ensureProjectTypeExists = async (type) => {
+    if (!type) return;
+    const upperType = type.toUpperCase();
+    const snap = await projectTypeCollection.where("name", "==", upperType).get();
     if (snap.empty) {
-        await workStatusCollection.add({ 
-            name: upperStatus,
+        await projectTypeCollection.add({
+            name: upperType,
             status: "approved",
             createdAt: new Date().toISOString()
         });
@@ -95,7 +95,9 @@ const ensureWorkStatusExists = async (status) => {
 exports.createApproval = async (data) => {
     if (!data.projectNo) throw new Error("projectNo is required");
 
-    await ensureWorkStatusExists(data.workStatus);
+    // Backward compatibility: use projectType if present, else workStatus
+    const pType = data.projectType || data.workStatus;
+    if (pType) await ensureProjectTypeExists(pType);
 
     const docRef = approvalsCollection.doc(data.projectNo);
     const doc = await docRef.get();
@@ -105,10 +107,14 @@ exports.createApproval = async (data) => {
 
     const newApproval = {
         ...data,
+        projectType: pType || "", // normalize to projectType
         createdAt: getCurrentDate(),
         statusTracking: data.statusTracking || { currentStatus: "ongoing" },
         financialDetails: data.financialDetails || { totalFees: 0 }
     };
+
+    // Clean up old field if it existed
+    delete newApproval.workStatus;
 
     await docRef.set(newApproval);
     return { id: data.projectNo, ...newApproval };
@@ -161,8 +167,11 @@ exports.updateApproval = async (id, updateData) => {
         docRef = snap.docs[0].ref;
     }
 
-    if (updateData.workStatus) {
-        await ensureWorkStatusExists(updateData.workStatus);
+    const pType = updateData.projectType || updateData.workStatus;
+    if (pType) {
+        await ensureProjectTypeExists(pType);
+        updateData.projectType = pType; // normalize
+        delete updateData.workStatus;
     }
 
     await docRef.update(updateData);
@@ -377,55 +386,63 @@ exports.updateTotalFees = async (req, res) => {
 
 
 
-exports.addWorkStatus = async (name) => {
-    if (!name) throw new Error("Work status name required");
+
+
+exports.confirmProjectType = async (id) => {
+    const docRef = projectTypeCollection.doc(id);
+    const doc = await docRef.get();
+    if (!doc.exists) throw new Error("Project type not found");
+
+    await docRef.update({ status: "approved" });
+    return { message: "Project type confirmed successfully" };
+};
+
+exports.deleteProjectType = async (id) => {
+    const docRef = projectTypeCollection.doc(id);
+    const doc = await docRef.get();
+    if (!doc.exists) throw new Error("Project type not found");
+
+    await docRef.delete();
+    return { message: "Project type deleted successfully" };
+};
+
+exports.getProjectTypes = async () => {
+    // 1. Fetch all documents from the "projectTypeOptions" collection
+    const snap = await projectTypeCollection.get();
+
+    // 2. Map the documents and filter by "approved" status
+    const typesFromDb = snap.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+    }));
+
+    // Return only those that are confirmed/approved
+    return typesFromDb
+        .filter(s => s.status === "approved" || !s.status)
+        .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+};
+
+/**
+ * Handles adding new entries like "proccessing2" into the real collection
+ */
+exports.addProjectType = async (name) => {
+    if (!name) throw new Error("Project type name required");
     const upperName = name.toUpperCase();
 
-    // Check if it already exists
-    const existingSnap = await workStatusCollection
+    const existingSnap = await projectTypeCollection
         .where("name", "==", upperName)
         .get();
 
     if (!existingSnap.empty) {
-        const doc = existingSnap.docs[0];
-        return { 
-            id: doc.id, 
-            message: "Work status already exists", 
-            alreadyExists: true 
-        };
+        return { message: "Project type already exists", alreadyExists: true };
     }
 
-    const docRef = await workStatusCollection.add({
+    // This stores the new status in the actual Firestore collection
+    const docRef = await projectTypeCollection.add({
         name: upperName,
-        status: "pending",
+        status: "pending", // Will not show in app until confirmed
         createdAt: new Date().toISOString()
     });
 
     return { id: docRef.id, message: "Work status added" };
-};
-
-exports.confirmWorkStatus = async (id) => {
-    const docRef = workStatusCollection.doc(id);
-    const doc = await docRef.get();
-    if (!doc.exists) throw new Error("Work status not found");
-
-    await docRef.update({ status: "approved" });
-    return { message: "Work status confirmed successfully" };
-};
-
-exports.deleteWorkStatus = async (id) => {
-    const docRef = workStatusCollection.doc(id);
-    const doc = await docRef.get();
-    if (!doc.exists) throw new Error("Work status not found");
-
-    await docRef.delete();
-    return { message: "Work status deleted successfully" };
-};
-
-exports.getWorkStatuses = async () => {
-    const snap = await workStatusCollection.get();
-    return snap.docs
-        .map(doc => ({ id: doc.id, ...doc.data() }))
-        .filter(s => s.status === "approved" || !s.status) // include defaults
-        .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
 };
