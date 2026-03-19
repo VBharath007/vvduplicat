@@ -29,11 +29,13 @@ app.listen(PORT, async () => {
     // self-invokes and throws, there was nothing to catch it.
     try {
         await createDefaultAdmin();
+        const { initDefaultSubLabourTypes } = require("./src/modules/labour/labour.service");
+        await initDefaultSubLabourTypes();
     } catch (err) {
-        console.error("❌ createDefaultAdmin failed:", err.message);
-        // Non-fatal — server keeps running even if admin creation fails.
+        console.error("❌ Initialization failed:", err.message);
     }
 });
+
 
 // cron.schedule("0 0 1 * *", async () => {
 //     const lastMonth = dayjs().subtract(1, "month");

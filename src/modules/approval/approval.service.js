@@ -193,6 +193,17 @@ exports.addAdvance = async (id, payload) => {
 
     const advances = payload.approvalAdvancePaidFees || payload;
     const advancesArray = Array.isArray(advances) ? advances : [advances];
+
+    // Validation: Check if total advances exceed total fees
+    const additionalAmount = advancesArray.reduce((sum, a) => sum + (Number(a.amountReceived) || 0), 0);
+    const currentApproval = await this.getApprovalById(id);
+    const totalFees = Number(currentApproval.financialDetails?.totalFees) || 0;
+    const currentlyPaid = currentApproval.calculations.advancedPaid;
+
+    if (currentlyPaid + additionalAmount > totalFees) {
+        throw new Error(`Total advances (${currentlyPaid + additionalAmount}) cannot exceed Total Fees (${totalFees})`);
+    }
+
     const batch = db.batch();
     const addedAdvances = [];
 
@@ -367,13 +378,19 @@ exports.updateTotalFees = async (req, res) => {
             return res.status(404).json({ message: "Approval not found" });
         }
 
+        // Validation: totalFees cannot be less than advancedPaid
+        const calculations = await getApprovalCalculations(id, totalFees);
+        if (Number(totalFees) < calculations.advancedPaid) {
+            return res.status(400).json({ 
+                error: `Total fees (${totalFees}) cannot be less than advanced amount already paid (${calculations.advancedPaid})` 
+            });
+        }
+
         await docRef.update({
             "financialDetails.totalFees": Number(totalFees)
         });
 
-        // recalculate values
-        const calculations = await getApprovalCalculations(id, totalFees);
-
+        // reuse existing calculations
         res.json({
             message: "Total fees updated successfully",
             calculations

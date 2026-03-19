@@ -300,15 +300,20 @@ exports.updateMaterialReceived = async (receiptId, updateData) => {
     if (!doc.exists) throw new Error("Receipt not found");
 
     const oldData = doc.data();
-    const existingQty = Number(oldData.quantity) || 0;
-    const addedQty = Number(updateData.quantity) || 0;  // additional qty being added
-    const newQty = existingQty + addedQty;
 
-    const currentRate = updateData.rate !== undefined
+    // PUT = SET (replace), not ADD
+    // na 30 nu send pannina → 30 aga SET aaganum, 20+30=50 aga aaGAKUDADU
+    const oldQty = Number(oldData.quantity) || 0;
+    const newQty = updateData.quantity !== undefined
+        ? Number(updateData.quantity)
+        : oldQty;
+
+    const newRate = updateData.rate !== undefined
         ? Number(updateData.rate)
         : (Number(oldData.rate) || 0);
 
-    const newTotalAmount = newQty * currentRate;
+    const newTotalAmount = newQty * newRate;
+
     const newPaidAmount = updateData.paidAmount !== undefined
         ? Number(updateData.paidAmount)
         : (Number(oldData.paidAmount) || 0);
@@ -316,22 +321,27 @@ exports.updateMaterialReceived = async (receiptId, updateData) => {
     const updatedRecord = {
         ...updateData,
         quantity: newQty,
+        rate: newRate,
         totalAmount: newTotalAmount,
         paidAmount: newPaidAmount,
-        dueAmount: newTotalAmount - newPaidAmount,
+        dueAmount: Math.max(0, newTotalAmount - newPaidAmount),
         updatedAt: new Date().toISOString(),
     };
 
-    // ── Stock update (additive) ───────────────────────────────────────────────
-    if (addedQty !== 0) {
+    // ── Stock update — DIFF based (SET logic) ────────────────────────────────
+    // Old qty: 20, New qty: 30 → stock diff = +10 (add 10 to stock)
+    // Old qty: 20, New qty: 10 → stock diff = -10 (remove 10 from stock)
+    const qtyDiff = newQty - oldQty;
+    if (qtyDiff !== 0) {
         const stockId = `${oldData.projectNo}_${oldData.materialId}`;
         const stockRef = stockCollection.doc(stockId);
         const stockDoc = await stockRef.get();
         if (stockDoc.exists) {
             const s = stockDoc.data();
             await stockRef.update({
-                receivedQuantity: (s.receivedQuantity || 0) + addedQty,
-                stock: (s.stock || 0) + addedQty,
+                receivedQuantity: Math.max(0, (Number(s.receivedQuantity) || 0) + qtyDiff),
+                stock: Math.max(0, (Number(s.stock) || 0) + qtyDiff),
+                updatedAt: new Date().toISOString(),
             });
         }
     }

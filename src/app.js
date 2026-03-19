@@ -35,6 +35,8 @@ app.use("/api/advances", require("./modules/advance/advance.routes"));
 app.use("/api/site-expenses", require("./modules/expense/expense.routes"));
 app.use("/api/dealers", require("./modules/dealer/dealer.routes"));
 app.use("/api/approvals", require("./modules/approval/approval.routes"));
+app.use("/api/labours", require("./modules/labour/labour.routes"));
+app.use("/api/payments", require("./modules/payment/payment.routes"));
 // Error Middleware
 app.use(require("./middleware/error.middleware").errorHandler);
 

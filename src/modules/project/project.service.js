@@ -93,6 +93,8 @@ async function _getFinancials(projectNo, projectData) {
             createdAt: data.createdAt,
             materialId: data.materialId || null,
             receiptId: data.receiptId || null,
+            labourId: data.labourId || null,
+            labourName: data.labourName || null,
         };
 
         if (data.type === "materialPayment") {
@@ -101,6 +103,12 @@ async function _getFinancials(projectNo, projectData) {
             entry.remark = data.remark || `Material Payment – ${data.particular || data.materialId}`;
             materialPayTotal += amount;
             materialPayments.push(entry);
+        } else if (data.type === "labourPayment") {
+            // ── Labour payment: weekly payment to labour ───────────────────
+            entry.type = "LabourPayment";
+            entry.remark = data.remark || `Labour Payment – ${data.labourName || data.labourId}`;
+            siteExpenseTotal += amount;
+            siteExpenses.push(entry);
         } else {
             // ── Regular site expense ───────────────────────────────────────
             entry.type = "Expense";

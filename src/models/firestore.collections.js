@@ -14,10 +14,14 @@ module.exports = {
     MATERIAL_REQUIRED: "material_required",
     MATERIAL_STOCK: "material_stock",
     ADVANCES: "advances",
-    SITE_EXPENSES: "site_expenses",
+    SITE_EXPENSES: "siteExpenses",
     approvalAdvances: "approval_advances",
     approvalExpenses: "approval_expenses",
     MATERIAL_LEDGER: "material_ledger",
+    LABOUR_MASTERS: "labourMaster",
+    SUB_LABOUR_TYPES: "subLabourTypes",
+    LABOUR_PAYMENTS: "labourPayments",
+
 
 };
 
