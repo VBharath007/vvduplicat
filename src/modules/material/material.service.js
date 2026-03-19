@@ -47,10 +47,11 @@ const initializeMaterials = async () => {
         if (snap.empty) {
             const batch = db.batch();
             DEFAULT_MATERIALS.forEach(name => {
-                // Generate a simple ID or use a UUID
-                const docRef = materialsCollection.doc();
+                // Doc ID = materialId — consistent lookup everywhere
+                const materialId = name.replace(/\s+/g, '_').toUpperCase();
+                const docRef = materialsCollection.doc(materialId);
                 batch.set(docRef, {
-                    materialId: name.replace(/\s+/g, '_').toUpperCase(),
+                    materialId,
                     materialName: name.toUpperCase(),
                     isDefault: true,
                     createdAt: new Date().toISOString()
@@ -393,49 +394,6 @@ exports.deleteMaterialReceived = async (receiptId) => {
 // ─── Material Used ────────────────────────────────────────────────────────────
 
 exports.recordMaterialUsed = async (usedData) => {
-    const normalizedId = usedData.materialId ? usedData.materialId.trim().toUpperCase() : null;
-
-    if (!usedData.projectNo || !normalizedId) throw new Error("projectNo and materialId are required");
-
-    const qtyUsed = Number(usedData.quantityUsed) || 0;
-    const stockId = `${usedData.projectNo}_${normalizedId}`;
-    const stockRef = stockCollection.doc(stockId);
-    const stockDoc = await stockRef.get();
-
-    if (!stockDoc.exists) throw new Error("Material not found in stock. Please receive it first.");
-
-    const currentStock = stockDoc.data();
-    const availableStock = Number(currentStock.stock) || 0;
-
-    // Custom Error Check
-    if (qtyUsed > availableStock) {
-        throw new Error(
-            `Stock is ${availableStock}, you cannot use ${qtyUsed}. ` +
-            `If you want to use this amount, please add material received first and then use it.`
-        );
-    }
-
-    const finalUsedData = {
-        ...usedData,
-        materialId: normalizedId,
-        materialName: currentStock.materialName,
-        quantityUsed: qtyUsed,
-        createdAt: receiptDate
-    };
-
-    const docRef = await materialUsedCollection.add(finalUsedData);
-
-    await stockRef.update({
-        usedQuantity: (Number(currentStock.usedQuantity) || 0) + qtyUsed,
-        stock: availableStock - qtyUsed,
-        updatedAt: receiptDate
-    });
-
-    return { usageId: docRef.id, ...finalUsedData };
-};
-
-
-exports.recordMaterialUsed = async (usedData) => {
     // 1. Input-ai UpperCase-aga maatri duplicate-ai thadukkum logic
     const normalizedId = usedData.materialId ? usedData.materialId.trim().toUpperCase() : null;
 
@@ -464,12 +422,14 @@ exports.recordMaterialUsed = async (usedData) => {
     }
 
     // 4. Data-vai prepare seidhu save seiyum logic
+    const usedDate = getFormattedDate(usedData.date) || new Date().toISOString().split("T")[0];
+
     const finalUsedData = {
         ...usedData,
         materialId: normalizedId,
-        materialName: currentStock.materialName, // Master name-aiye payanpaduthugiraen
+        materialName: currentStock.materialName,
         quantityUsed: qtyUsed,
-        createdAt: receiptDate
+        createdAt: usedDate,
     };
 
     const docRef = await materialUsedCollection.add(finalUsedData);
@@ -478,7 +438,7 @@ exports.recordMaterialUsed = async (usedData) => {
     await stockRef.update({
         usedQuantity: (Number(currentStock.usedQuantity) || 0) + qtyUsed,
         stock: availableStock - qtyUsed,
-        updatedAt: receiptDate
+        updatedAt: usedDate,
     });
 
     return { usageId: docRef.id, ...finalUsedData };

@@ -86,7 +86,13 @@ exports.createWork = async (workData) => {
     const { projectNo, work, tomorrowWork } = workData;
     if (!projectNo) throw new Error("projectNo is required");
 
-    const name = (work || "General Work").trim().toUpperCase();
+    // work field empty-aa irundha create panna vendam
+    // Flutter "Save Details" press panna panna empty work create aagaathu
+    if (!work || !work.trim()) {
+        throw new Error("work (work name) is required. Please enter a work name before saving.");
+    }
+
+    const name = work.trim().toUpperCase();
     const workDate = dayjs().format("DD-MM-YYYY");
 
     const payload = {
