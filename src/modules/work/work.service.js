@@ -310,18 +310,88 @@ exports.deleteWork = async (workId) => {
     return { message: "Work log deleted successfully" };
 };
 
+// Date parsing helper to handle arbitrary YYYY-MM-DD or DD-MM-YYYY formats.
+const _parseD = (dString) => {
+    if (!dString) return null;
+    const parts = String(dString).split("T")[0].split("-");
+    if (parts.length === 3) {
+        if (parts[0].length === 4) return dayjs(`${parts[0]}-${parts[1]}-${parts[2]}`);
+        if (parts[2].length === 4) return dayjs(`${parts[2]}-${parts[1]}-${parts[0]}`);
+    }
+    return dayjs(dString);
+};
+
+// Generates both forward and inverse date string formats for Firestore querying.
+const _generateDateVariations = (fromStr, toStr) => {
+    const fromD = _parseD(fromStr);
+    let toD = _parseD(toStr) || fromD;
+    
+    if (!fromD || !fromD.isValid()) return [];
+    
+    let current = fromD;
+    const vars = new Set();
+    while (current.isBefore(toD, 'day') || current.isSame(toD, 'day')) {
+        vars.add(current.format("YYYY-MM-DD"));
+        vars.add(current.format("DD-MM-YYYY"));
+        current = current.add(1, 'day');
+        if (vars.size > 28) break; // ensure we stay safely under Firestore's 30 limit for 'in'
+    }
+    return Array.from(vars);
+};
+
 /**
  * Get work documents for a specific project + date.
+ * Fully enriched with sub-labour arrays recursively.
  */
 exports.getWorkByDate = async (projectNo, date) => {
+    const variations = _generateDateVariations(date, date);
+    if (variations.length === 0) return [];
+
     const snapshot = await worksCollection
         .where("projectNo", "==", projectNo)
-        .where("date", "==", date)
+        .where("date", "in", variations)
         .get();
 
-    if (snapshot.empty) return null;
-    const docs = snapshot.docs.map(doc => ({ workId: doc.id, ...doc.data() }));
-    return docs.length === 1 ? docs[0] : docs;
+    if (snapshot.empty) return [];
+
+    const works = snapshot.docs.map(doc => ({ workId: doc.id, ...doc.data() }));
+
+    // Enrich missing manual fields
+    for (let i = 0; i < works.length; i++) {
+        works[i].labourDetails = await buildLabourDetails(works[i].labourDetails);
+    }
+    return works;
+};
+
+exports.getWorksByWeek = async (projectNo, from, to) => {
+    const fromDay = _parseD(from);
+    const toDay = _parseD(to);
+    
+    // In case the date gap is wildly huge and exceeds 30 variations, filter safely in-memory.
+    const snapshot = await worksCollection
+        .where("projectNo", "==", projectNo)
+        .get();
+
+    if (snapshot.empty) return [];
+
+    const works = [];
+    snapshot.docs.forEach(doc => {
+        const data = doc.data();
+        const workDay = _parseD(data.date);
+        if (workDay && workDay.isValid() && 
+           (workDay.isSame(fromDay, 'day') || workDay.isAfter(fromDay, 'day')) &&
+           (workDay.isSame(toDay, 'day') || workDay.isBefore(toDay, 'day'))) {
+            works.push({ workId: doc.id, ...data });
+        }
+    });
+
+    works.sort((a, b) => _parseD(a.date).valueOf() - _parseD(b.date).valueOf());
+
+    // Enrich missing manual fields
+    for (let i = 0; i < works.length; i++) {
+        works[i].labourDetails = await buildLabourDetails(works[i].labourDetails);
+    }
+    return works;
 };
 // ═══════════════════════════════════════════════════════════════════════════
 // EDIT ONE SUB-LABOUR COUNT
@@ -397,42 +467,42 @@ exports.deleteSubLabourType = async (projectNo, workId, type) => {
 // WEEK FILTER — Mon to Sat date range
 // GET /api/works/project/:projectNo/week?from=16-03-2026&to=21-03-2026
 // ═══════════════════════════════════════════════════════════════════════════
-exports.getWorksByWeek = async (projectNo, from, to) => {
-    if (!projectNo || !from || !to) {
-        throw new Error("projectNo, from, and to are required");
-    }
+// exports.getWorksByWeek = async (projectNo, from, to) => {
+//     if (!projectNo || !from || !to) {
+//         throw new Error("projectNo, from, and to are required");
+//     }
 
-    const snapshot = await worksCollection
-        .where("projectNo", "==", projectNo)
-        .get();
+//     const snapshot = await worksCollection
+//         .where("projectNo", "==", projectNo)
+//         .get();
 
-    if (snapshot.empty) return [];
+//     if (snapshot.empty) return [];
 
-    const fromDay = dayjs(from, "DD-MM-YYYY");
-    const toDay = dayjs(to, "DD-MM-YYYY");
+//     const fromDay = dayjs(from, "DD-MM-YYYY");
+//     const toDay = dayjs(to, "DD-MM-YYYY");
 
-    const works = snapshot.docs
-        .map(doc => ({ workId: doc.id, ...doc.data() }))
-        .filter(w => {
-            const workDay = dayjs(w.date, "DD-MM-YYYY");
-            return (
-                workDay.isValid() &&
-                (workDay.isSame(fromDay) || workDay.isAfter(fromDay)) &&
-                (workDay.isSame(toDay) || workDay.isBefore(toDay))
-            );
-        })
-        .sort((a, b) =>
-            dayjs(a.date, "DD-MM-YYYY").valueOf() -
-            dayjs(b.date, "DD-MM-YYYY").valueOf()
-        );
+//     const works = snapshot.docs
+//         .map(doc => ({ workId: doc.id, ...doc.data() }))
+//         .filter(w => {
+//             const workDay = dayjs(w.date, "DD-MM-YYYY");
+//             return (
+//                 workDay.isValid() &&
+//                 (workDay.isSame(fromDay) || workDay.isAfter(fromDay)) &&
+//                 (workDay.isSame(toDay) || workDay.isBefore(toDay))
+//             );
+//         })
+//         .sort((a, b) =>
+//             dayjs(a.date, "DD-MM-YYYY").valueOf() -
+//             dayjs(b.date, "DD-MM-YYYY").valueOf()
+//         );
 
-    // Enrich with live labour details
-    for (let i = 0; i < works.length; i++) {
-        works[i].labourDetails = await buildLabourDetails(works[i].labourDetails);
-    }
+//     // Enrich with live labour details
+//     for (let i = 0; i < works.length; i++) {
+//         works[i].labourDetails = await buildLabourDetails(works[i].labourDetails);
+//     }
 
-    return works;
-};
+//     return works;
+// };
 
 // ═══════════════════════════════════════════════════════════════════════════
 // REVERSE LOOKUP — all works/projects a labour was assigned to

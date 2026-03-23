@@ -6,6 +6,22 @@ const projectsCollection = db.collection("projects");
 const siteExpensesCollection = db.collection("siteExpenses");
 
 // ─── Internal helper ──────────────────────────────────────────────────────────
+const getPhoneVariations = (phone) => {
+    if (!phone) return [];
+    const digits = String(phone).replace(/\D/g, "");
+    let base = digits;
+    if (digits.length === 12 && digits.startsWith("91")) base = digits.substring(2);
+    else if (digits.length > 10 && digits.startsWith("0")) base = digits.substring(1);
+    
+    return [...new Set([
+        String(phone), 
+        base, 
+        `+91 ${base}`, 
+        `+91${base}`, 
+        `91${base}`
+    ])].slice(0, 10);
+};
+
 // Batch-fetch projectName for every unique projectNo in a single Firestore read.
 // Returns map: { "PRJ001": "Kumar Villa", "PRJ002": "Office Build" }
 // Falls back to projectNo if projectName field is missing.
@@ -114,7 +130,7 @@ exports.getDealerHistory = async (phoneNumber) => {
     if (!phoneNumber) throw new Error("Phone number is required");
 
     const snapshot = await materialReceivedCollection
-        .where("dealerContact", "==", phoneNumber).get();
+        .where("dealerContact", "in", getPhoneVariations(phoneNumber)).get();
 
     if (snapshot.empty) throw new Error("No dealer found with this phone number");
 
@@ -213,14 +229,17 @@ exports.getDealerHistory = async (phoneNumber) => {
 exports.getDealerPaymentLog = async (phoneNumber) => {
     if (!phoneNumber) throw new Error("Phone number is required");
 
+    const variations = getPhoneVariations(phoneNumber);
     const [paymentSnap, billSnap] = await Promise.all([
         paymentsCollection
-            .where("dealerContact", "==", phoneNumber).get(),
+            .where("dealerContact", "in", variations).get(),
         materialReceivedCollection
-            .where("dealerContact", "==", phoneNumber).get(),
+            .where("dealerContact", "in", variations).get(),
     ]);
 
-    if (billSnap.empty) throw new Error("No dealer found with this phone number");
+    if (billSnap.empty && paymentSnap.empty) {
+        throw new Error("No dealer found with this phone number");
+    }
 
     let dealerName = "";
     let totalBilled = 0;
@@ -286,12 +305,18 @@ exports.getDealerPaymentLog = async (phoneNumber) => {
         projectBreakdown[pNo].balance += (totalAmt - paidAmt);
     });
 
+    let actualGlobalPaid = 0;
+    Object.values(projectBreakdown).forEach(p => {
+        actualGlobalPaid += p.totalPaid;
+    });
+
     return {
         dealerDetails: { dealerName, phoneNumber },
         projectBreakdown: Object.values(projectBreakdown),
         summary: {
             totalBilled,
-            remainingBalance: totalBilled - runningTotal,
+            totalPaid: actualGlobalPaid,
+            remainingBalance: totalBilled - actualGlobalPaid,
         },
     };
 };
@@ -305,7 +330,7 @@ exports.getDealerPaymentHistory = async (phoneNumber) => {
         throw new Error("Phone number is required");
     }
 
-    const snapshot = await materialReceivedCollection.where("dealerContact", "==", phoneNumber).get();
+    const snapshot = await materialReceivedCollection.where("dealerContact", "in", getPhoneVariations(phoneNumber)).get();
 
     if (snapshot.empty) {
         throw new Error("No transactions found for this dealer phone number");
@@ -363,7 +388,7 @@ exports.updateDealerPayment = async (phoneNumber, amountPaid) => {
     }
 
     const snapshot = await materialReceivedCollection
-        .where("dealerContact", "==", phoneNumber)
+        .where("dealerContact", "in", getPhoneVariations(phoneNumber))
         .get();
 
     const paymentRef = paymentsCollection.doc();
@@ -429,22 +454,31 @@ exports.getDealerProjectPaymentLog = async (phoneNumber, projectNo) => {
     };
 
     // Fetch bills + payment log + project name in parallel
+    const variations = getPhoneVariations(phoneNumber);
     const [billSnap, paymentSnap, projectDoc] = await Promise.all([
         materialReceivedCollection
-            .where("dealerContact", "==", phoneNumber)
+            .where("dealerContact", "in", variations)
             .where("projectNo", "==", projectNo)
             .get(),
         paymentsCollection
-            .where("dealerContact", "==", phoneNumber)
+            .where("dealerContact", "in", variations)
             .where("projectNo", "==", projectNo)
             .get(),
         projectsCollection.doc(projectNo).get(),
     ]);
 
+
+    console.log("Input Phone:", phoneNumber);
+    console.log("Input Project:", projectNo);
+    console.log("Bills found:", billSnap.size);
+    console.log("Payments found:", paymentSnap.size);
+
     if (billSnap.empty) {
-        throw new Error(
-            `No bills found for dealer ${phoneNumber} on project ${projectNo}`
-        );
+        // Let's see one document from the collection to check field names
+        const sample = await materialReceivedCollection.limit(1).get();
+        if (!sample.empty) {
+            console.log("Schema Hint: Document fields are:", Object.keys(sample.docs[0].data()));
+        }
     }
 
     // Resolve names
@@ -544,9 +578,9 @@ exports.getDealerProjectPaymentLog = async (phoneNumber, projectNo) => {
         // ── Summary ───────────────────────────────────────────────────────────
         summary: {
             totalBills: bills.length,
-            totalBilled,
-            totalPaid,
-            totalRemaining,
+            totalAmount: totalBilled,
+            paidAmount: totalPaid,
+            remainingBalance: totalRemaining,
             paymentCount: paymentHistory.length,
             status: totalRemaining <= 0 ? "Fully Paid"
                 : totalPaid > 0 ? "Partially Paid" : "Pending",
@@ -585,8 +619,9 @@ exports.payDealerProjectPayment = async (phoneNumber, projectNo, amount, method)
     // (double tap, retry, or network timeout re-submit).
     // Rule: same dealer + same project + same amount within last 60 seconds = duplicate
     const oneMinuteAgo = new Date(paymentDate.getTime() - 60 * 1000).toISOString();
+    const variations = getPhoneVariations(phoneNumber);
     const dupSnap = await paymentsCollection
-        .where("dealerContact", "==", phoneNumber)
+        .where("dealerContact", "in", variations)
         .where("projectNo", "==", projectNo)
         .where("amountPaid", "==", paymentAmount)
         .get();
@@ -618,31 +653,32 @@ exports.payDealerProjectPayment = async (phoneNumber, projectNo, amount, method)
 
     // Fetch only bills for this dealer + this project
     const snapshot = await materialReceivedCollection
-        .where("dealerContact", "==", phoneNumber)
+        .where("dealerContact", "in", variations)
         .where("projectNo", "==", projectNo)
         .get();
 
-    if (snapshot.empty) {
-        throw new Error(
-            `No bills found for dealer ${phoneNumber} on project ${projectNo}`
-        );
+    let totalPending = 0;
+    if (!snapshot.empty) {
+        snapshot.forEach(doc => {
+            const d = doc.data();
+            totalPending += (Number(d.totalAmount) || 0) - (Number(d.paidAmount) || 0);
+        });
     }
 
-    // Check there is actually something pending to pay
-    let totalPending = 0;
-    snapshot.forEach(doc => {
-        const d = doc.data();
-        totalPending += (Number(d.totalAmount) || 0) - (Number(d.paidAmount) || 0);
-    });
-
     if (totalPending <= 0) {
-        throw new Error("All bills for this project are already fully paid");
+        throw new Error("All bills for this project are already fully paid. No pending amount.");
+    }
+
+    if (paymentAmount > totalPending) {
+        throw new Error(`You can only pay up to the total pending amount of ₹${totalPending}.`);
     }
 
     // Sort bills FIFO — oldest first
     const bills = [];
-    snapshot.forEach(doc => bills.push({ id: doc.id, ref: doc.ref, data: doc.data() }));
-    bills.sort((a, b) => new Date(a.data.createdAt || 0) - new Date(b.data.createdAt || 0));
+    if (!snapshot.empty) {
+        snapshot.forEach(doc => bills.push({ id: doc.id, ref: doc.ref, data: doc.data() }));
+        bills.sort((a, b) => new Date(a.data.createdAt || 0) - new Date(b.data.createdAt || 0));
+    }
 
     // Apply payment FIFO across this project's bills only
     let remaining = paymentAmount;
@@ -746,6 +782,8 @@ exports.payDealerProjectPayment = async (phoneNumber, projectNo, amount, method)
         }
     }
 
+    // Advance payments (overpayments) are blocked, so no unapplied remaining logic is needed here.
+
     // Log this payment in dealerPayments — WITH projectNo so it's queryable later
     await paymentsCollection.add({
         dealerContact: phoneNumber,
@@ -758,17 +796,14 @@ exports.payDealerProjectPayment = async (phoneNumber, projectNo, amount, method)
 
     // Fetch updated bills to build the full response log
     const updatedSnap = await materialReceivedCollection
-        .where("dealerContact", "==", phoneNumber)
+        .where("dealerContact", "in", variations)
         .where("projectNo", "==", projectNo)
         .get();
 
     const logs = [];
-    let newTotalPaid = 0;
-
     updatedSnap.forEach(doc => {
         const d = doc.data();
         const paid = Number(d.paidAmount) || 0;
-        newTotalPaid += paid;
         logs.push({
             receiptId: doc.id,
             materialName: d.materialName,
@@ -783,7 +818,8 @@ exports.payDealerProjectPayment = async (phoneNumber, projectNo, amount, method)
     });
 
     const totalBilled = logs.reduce((s, l) => s + l.totalAmount, 0);
-    const totalRemaining = totalBilled - newTotalPaid;
+    const totalPaid = logs.reduce((s, l) => s + l.paidAmount, 0);
+    const totalRemaining = totalBilled - totalPaid;
 
     return {
         success: true,
@@ -795,11 +831,11 @@ exports.payDealerProjectPayment = async (phoneNumber, projectNo, amount, method)
         }],
         billBreakdown: logs,
         summary: {
-            totalBilled,
-            totalPaid: newTotalPaid,
-            totalRemaining,
+            totalAmount: totalBilled,
+            paidAmount: totalPaid,
+            remainingBalance: totalRemaining,
             status: totalRemaining <= 0 ? "Fully Paid"
-                : newTotalPaid > 0 ? "Partially Paid" : "Pending",
+                : totalPaid > 0 ? "Partially Paid" : "Pending",
         },
     };
 };

@@ -1,5 +1,10 @@
 const workService = require("./work.service");
 const labourService = require("../labour/labour.service");
+const { db } = require("../../config/firebase");
+const { WORKS } = require("../../models/firestore.collections");
+
+
+
 
 exports.createWork = async (req, res, next) => {
     try {
@@ -49,15 +54,36 @@ exports.deleteWork = async (req, res, next) => {
     }
 };
 
-exports.getWorkByDate = async (req, res, next) => {
+exports.getWorkByDate = async (req, res) => {
     try {
-        const projectNo = req.params.projectNo || req.query.projectNo;
-        const date = req.params.date || req.query.date;
+        const { projectNo, date } = req.params;
 
         if (!projectNo || !date) {
             return res.status(400).json({ success: false, message: "projectNo and date are required" });
         }
+
         const result = await workService.getWorkByDate(projectNo, date);
+
+        // If result is empty, we still return success: true but with an empty list
+        res.status(200).json({ success: true, data: result });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+exports.getWorksByWeek = async (req, res) => {
+    try {
+        const { projectNo } = req.params;
+        const { from, to } = req.query;
+
+        if (!from || !to) {
+            return res.status(400).json({
+                success: false,
+                message: "Query params 'from' and 'to' are required"
+            });
+        }
+
+        const result = await workService.getWorksByWeek(projectNo, from, to);
         res.status(200).json({ success: true, data: result });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
