@@ -186,9 +186,90 @@ exports.updateProject = async (projectNo, updateData) => {
 exports.deleteProject = async (projectNo) => {
     const docRef = projectsCollection.doc(projectNo);
     const doc = await docRef.get();
-    if (!doc.exists) throw new Error("Project not found");
+
+    // ── Check project exists ─────────────────────────────────────────────────
+    if (!doc.exists) {
+        throw new Error(`Project '${projectNo}' not found`);
+    }
+
+    // ── Helper: delete all docs in a query ───────────────────────────────────
+    const deleteQuery = async (query, label) => {
+        const snap = await query.get();
+
+        if (snap.empty) {
+            console.log(`No ${label} found for ${projectNo} — skipping`);
+            return 0;
+        } else {
+            const batch = db.batch();
+            snap.docs.forEach(d => batch.delete(d.ref));
+            await batch.commit();
+            console.log(`Deleted ${snap.size} ${label} for ${projectNo}`);
+            return snap.size;
+        }
+    };
+
+    // ── Cascade delete — all project-related data ────────────────────────────
+    let works = 0, received = 0, used = 0, expenses = 0;
+    let advances = 0, payments = 0, required = 0, stockDeleted = 0;
+
+    // Works
+    works = await deleteQuery(
+        worksCollection.where("projectNo", "==", projectNo), "works"
+    );
+
+    // Material Received
+    received = await deleteQuery(
+        materialReceivedCollection.where("projectNo", "==", projectNo), "materialReceived"
+    );
+
+    // Material Used
+    used = await deleteQuery(
+        materialUsedCollection.where("projectNo", "==", projectNo), "materialUsed"
+    );
+
+    // Site Expenses
+    expenses = await deleteQuery(
+        siteExpensesCollection.where("projectNo", "==", projectNo), "siteExpenses"
+    );
+
+    // Advances
+    advances = await deleteQuery(
+        advancesCollection.where("projectNo", "==", projectNo), "advances"
+    );
+
+    // Labour Payments
+    payments = await deleteQuery(
+        labourPaymentsCollection.where("projectNo", "==", projectNo), "labourPayments"
+    );
+
+    // Material Required
+    required = await deleteQuery(
+        materialRequiredCollection.where("projectNo", "==", projectNo), "materialRequired"
+    );
+
+    // Stock
+    stockDeleted = await deleteQuery(
+        stockCollection.where("projectNo", "==", projectNo), "stock"
+    );
+
+    // ── Finally delete the project itself ────────────────────────────────────
     await docRef.delete();
-    return { message: "Project deleted successfully" };
+    console.log(`Project '${projectNo}' deleted successfully`);
+
+    // ── Response ─────────────────────────────────────────────────────────────
+    return {
+        message: `Project '${projectNo}' and all related data deleted successfully`,
+        deleted: {
+            works,
+            materialReceived: received,
+            materialUsed: used,
+            siteExpenses: expenses,
+            advances,
+            labourPayments: payments,
+            materialRequired: required,
+            stock: stockDeleted,
+        }
+    };
 };
 
 
