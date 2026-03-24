@@ -14,55 +14,49 @@ const now = () => dayjs().format("DD-MM-YY HH:mm");
  * Uses the stored counts if available, otherwise returns zeros.
  */
 const buildLabourDetails = async (storedLabourDetails) => {
-    const headLabourId = storedLabourDetails?.headLabourId;
+    if (!storedLabourDetails || Object.keys(storedLabourDetails).length === 0) return {};
+
     const masters = await labourService.getLabourMasters();
     const subTypes = await labourService.getSubLabourTypes();
 
-    const subLabourDetailsMap = {};
-    // Initialize all known types with 0
-    subTypes.forEach(t => {
-        subLabourDetailsMap[t.typeName] = 0;
-    });
-
-    // Merge in stored counts from the work log if they exist
-    if (storedLabourDetails?.subLabourDetails) {
-        Object.keys(storedLabourDetails.subLabourDetails).forEach(key => {
-            subLabourDetailsMap[key] = storedLabourDetails.subLabourDetails[key];
-        });
-    }
-
-    let headLabourName = "N/A";
-    let headLabourPhoneNumber = "N/A";
-    let resolvedId = null;
-
-    if (headLabourId) {
-        try {
-            const master = await labourService.getLabourMasterById(headLabourId);
-            headLabourName = master.name;
-            headLabourPhoneNumber = master.contact;
-            resolvedId = master.id;
-        } catch (_) { }
-    }
-
-    if (!resolvedId && masters.length > 0) {
-        headLabourName = masters[0].name;
-        headLabourPhoneNumber = masters[0].contact;
-        resolvedId = masters[0].id;
-    }
-
-    const result = {
-        headLabourId: resolvedId,
-        headLabourName,
-        headLabourPhoneNumber,
+    const fetchMasterInfo = (hId) => {
+        let name = "N/A", phone = "N/A";
+        const m = masters.find(x => x.id === hId);
+        if (m) { name = m.name; phone = m.contact; }
+        return { name, phone };
     };
 
-    // Include sub-labour details + total if they were explicitly provided/stored
-    if (storedLabourDetails?.subLabourDetails) {
-        result.subLabourDetails = subLabourDetailsMap;
-        result.totalLabourCount = Object.values(subLabourDetailsMap).reduce((sum, v) => sum + v, 0);
+    const processEntry = (entry) => {
+        const subMap = {};
+        subTypes.forEach(t => subMap[t.typeName] = 0);
+        if (entry.subLabourDetails) {
+            Object.keys(entry.subLabourDetails).forEach(k => {
+                subMap[k] = entry.subLabourDetails[k];
+            });
+        }
+        let { name, phone } = fetchMasterInfo(entry.headLabourId);
+
+        return {
+            headLabourId: entry.headLabourId,
+            headLabourName: name !== "N/A" ? name : (entry.headLabourName || "N/A"),
+            headLabourPhoneNumber: phone !== "N/A" ? phone : (entry.headLabourPhoneNumber || "N/A"),
+            subLabourDetails: subMap,
+            totalLabourCount: Object.values(subMap).reduce((s, v) => s + v, 0)
+        };
+    };
+
+    // LEGACY SUPPORT: If old data hasn't been migrated yet, it will be a single flat object
+    if (storedLabourDetails.headLabourId && typeof storedLabourDetails.headLabourId === 'string') {
+        const processed = processEntry(storedLabourDetails);
+        return { [processed.headLabourId]: processed };
     }
 
-    return result;
+    // MULTIPLE HEAD LABOUR SUPPORT (Keyed Map)
+    const newMap = {};
+    for (const key of Object.keys(storedLabourDetails)) {
+        newMap[key] = processEntry(storedLabourDetails[key]);
+    }
+    return newMap;
 };
 
 /**
@@ -138,7 +132,6 @@ exports.createWork = async (workData) => {
  * @param {object} [subLabourDetails] – optional override: { "MASON": 4, "MC": 3, ... }
  */
 exports.assignLabourToWork = async (projectNo, workId, headLabourId, subLabourDetails) => {
-    // 1. Verify work exists & belongs to this project
     const workRef = worksCollection.doc(workId);
     const workDoc = await workRef.get();
     if (!workDoc.exists) throw new Error("Work log not found");
@@ -147,64 +140,69 @@ exports.assignLabourToWork = async (projectNo, workId, headLabourId, subLabourDe
         throw new Error(`Work '${workId}' does not belong to project '${projectNo}'`);
     }
 
-    // 2. Verify headLabourId exists in the Master Registry
     const master = await labourService.getLabourMasterById(headLabourId);
 
-    // 3. Prepare labourDetails
-    const labourDetails = {
-        ...(docData.labourDetails || {}),
+    // Convert legacy object into a keyed map if necessary
+    let map = docData.labourDetails || {};
+    if (map.headLabourId && typeof map.headLabourId === 'string') {
+        map = { [map.headLabourId]: map };
+    }
+
+    // Establish the isolated entry for this specific Head Labour
+    const existingEntry = map[master.id] || {};
+
+    map[master.id] = {
+        ...existingEntry,
         headLabourId: master.id,
         headLabourName: master.name,
         headLabourPhoneNumber: master.contact
     };
 
-    // 4. Update sub-labours only if provided
     if (subLabourDetails && typeof subLabourDetails === 'object') {
         const subMap = {};
         for (const [key, val] of Object.entries(subLabourDetails)) {
             subMap[key.trim().toUpperCase()] = Number(val) || 0;
         }
-        labourDetails.subLabourDetails = subMap;
+        map[master.id].subLabourDetails = subMap;
+        map[master.id].totalLabourCount = Object.values(subMap).reduce((s, v) => s + v, 0);
     }
 
-    // 5. Persist the link
     await workRef.update({
-        labourDetails,
+        labourDetails: map,
         updatedAt: now()
     });
 
     const updated = await workRef.get();
-    const finalData = updated.data();
+    const finalData = { workId: updated.id, ...updated.data() };
+    finalData.labourDetails = await buildLabourDetails(finalData.labourDetails);
 
-    // If sub-labours not provided, omit subLabourDetails from response
-    if (!subLabourDetails) {
-        const responseData = { ...finalData };
-        if (responseData.labourDetails) {
-            const cleanLabour = { ...responseData.labourDetails };
-            delete cleanLabour.subLabourDetails;
-            responseData.labourDetails = cleanLabour;
-        }
-        return { workId: updated.id, ...responseData };
-    }
-
-    return { workId: updated.id, ...finalData };
+    return finalData;
 };
 
 /**
  * Updates ONLY the sub-labour counts for a specific work log.
  * Merges with existing sub-labour details.
  */
-exports.updateSubLabourForWork = async (projectNo, workId, subLabourDetails) => {
-    // 1. Verify work exists & belongs to this project
+exports.updateSubLabourForWork = async (projectNo, workId, labourId, subLabourDetails) => {
     const workRef = worksCollection.doc(workId);
     const workDoc = await workRef.get();
     if (!workDoc.exists) throw new Error("Work log not found");
+
     const docData = workDoc.data();
     if (docData.projectNo !== projectNo) {
         throw new Error(`Work '${workId}' does not belong to project '${projectNo}'`);
     }
 
-    // 2. Prepare the updates (normalize incoming data)
+    let map = docData.labourDetails || {};
+    if (map.headLabourId && typeof map.headLabourId === 'string') {
+        map = { [map.headLabourId]: map };
+    }
+
+    if (!map[labourId]) {
+        throw new Error(`Head Labour ID '${labourId}' is not assigned to this work entry. Please assign them first.`);
+    }
+
+    const entry = map[labourId];
     const incomingSubMap = {};
     if (subLabourDetails && typeof subLabourDetails === 'object') {
         for (const [key, val] of Object.entries(subLabourDetails)) {
@@ -212,25 +210,18 @@ exports.updateSubLabourForWork = async (projectNo, workId, subLabourDetails) => 
         }
     }
 
-    // 3. MERGE with existing sub-labour details from the database
-    const existingSubMap = docData.labourDetails?.subLabourDetails || {};
-    const finalSubMap = { ...existingSubMap, ...incomingSubMap };
+    const finalSubMap = { ...(entry.subLabourDetails || {}), ...incomingSubMap };
 
-    // 5. Build and persist the updated labourDetails
-    const updatedLabourDetails = {
-        ...(docData.labourDetails || {}),
-        subLabourDetails: finalSubMap,
-    };
+    map[labourId].subLabourDetails = finalSubMap;
+    map[labourId].totalLabourCount = Object.values(finalSubMap).reduce((sum, val) => sum + val, 0);
 
     await workRef.update({
-        labourDetails: updatedLabourDetails,
+        labourDetails: map,
         updatedAt: now()
     });
 
     const updated = await workRef.get();
     const finalData = { workId: updated.id, ...updated.data() };
-
-    // Enrich for the response (relational names, etc.)
     finalData.labourDetails = await buildLabourDetails(finalData.labourDetails);
 
     return finalData;
@@ -325,9 +316,9 @@ const _parseD = (dString) => {
 const _generateDateVariations = (fromStr, toStr) => {
     const fromD = _parseD(fromStr);
     let toD = _parseD(toStr) || fromD;
-    
+
     if (!fromD || !fromD.isValid()) return [];
-    
+
     let current = fromD;
     const vars = new Set();
     while (current.isBefore(toD, 'day') || current.isSame(toD, 'day')) {
@@ -366,7 +357,7 @@ exports.getWorkByDate = async (projectNo, date) => {
 exports.getWorksByWeek = async (projectNo, from, to) => {
     const fromDay = _parseD(from);
     const toDay = _parseD(to);
-    
+
     // In case the date gap is wildly huge and exceeds 30 variations, filter safely in-memory.
     const snapshot = await worksCollection
         .where("projectNo", "==", projectNo)
@@ -378,9 +369,9 @@ exports.getWorksByWeek = async (projectNo, from, to) => {
     snapshot.docs.forEach(doc => {
         const data = doc.data();
         const workDay = _parseD(data.date);
-        if (workDay && workDay.isValid() && 
-           (workDay.isSame(fromDay, 'day') || workDay.isAfter(fromDay, 'day')) &&
-           (workDay.isSame(toDay, 'day') || workDay.isBefore(toDay, 'day'))) {
+        if (workDay && workDay.isValid() &&
+            (workDay.isSame(fromDay, 'day') || workDay.isAfter(fromDay, 'day')) &&
+            (workDay.isSame(toDay, 'day') || workDay.isBefore(toDay, 'day'))) {
             works.push({ workId: doc.id, ...data });
         }
     });
@@ -396,7 +387,7 @@ exports.getWorksByWeek = async (projectNo, from, to) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // EDIT ONE SUB-LABOUR COUNT
 // ═══════════════════════════════════════════════════════════════════════════
-exports.editSubLabourCount = async (projectNo, workId, type, count) => {
+exports.editSubLabourCount = async (projectNo, workId, labourId, type, count) => {
     const workRef = worksCollection.doc(workId);
     const workDoc = await workRef.get();
     if (!workDoc.exists) throw new Error("Work log not found");
@@ -406,21 +397,28 @@ exports.editSubLabourCount = async (projectNo, workId, type, count) => {
         throw new Error(`Work '${workId}' does not belong to project '${projectNo}'`);
     }
 
+    let map = docData.labourDetails || {};
+    if (map.headLabourId && typeof map.headLabourId === 'string') {
+        map = { [map.headLabourId]: map };
+    }
+
+    if (!map[labourId]) {
+        throw new Error(`Head Labour ID '${labourId}' is not assigned to this work entry.`);
+    }
+
     const normalizedType = type.trim().toUpperCase();
-    const existingSubMap = docData.labourDetails?.subLabourDetails || {};
+    const entry = map[labourId];
+    const existingSubMap = entry.subLabourDetails || {};
 
     if (!(normalizedType in existingSubMap)) {
-        throw new Error(`Sub-labour type '${normalizedType}' not found in this work`);
+        throw new Error(`Sub-labour type '${normalizedType}' not found for this labour in this work`);
     }
 
     const updatedSubMap = { ...existingSubMap, [normalizedType]: Number(count) || 0 };
+    map[labourId].subLabourDetails = updatedSubMap;
+    map[labourId].totalLabourCount = Object.values(updatedSubMap).reduce((sum, val) => sum + val, 0);
 
-    const updatedLabourDetails = {
-        ...(docData.labourDetails || {}),
-        subLabourDetails: updatedSubMap,
-    };
-
-    await workRef.update({ labourDetails: updatedLabourDetails, updatedAt: now() });
+    await workRef.update({ labourDetails: map, updatedAt: now() });
 
     const updated = await workRef.get();
     const finalData = { workId: updated.id, ...updated.data() };
@@ -431,7 +429,7 @@ exports.editSubLabourCount = async (projectNo, workId, type, count) => {
 // ═══════════════════════════════════════════════════════════════════════════
 // DELETE ONE SUB-LABOUR TYPE FROM A WORK
 // ═══════════════════════════════════════════════════════════════════════════
-exports.deleteSubLabourType = async (projectNo, workId, type) => {
+exports.deleteSubLabourType = async (projectNo, workId, labourId, type) => {
     const workRef = worksCollection.doc(workId);
     const workDoc = await workRef.get();
     if (!workDoc.exists) throw new Error("Work log not found");
@@ -441,21 +439,29 @@ exports.deleteSubLabourType = async (projectNo, workId, type) => {
         throw new Error(`Work '${workId}' does not belong to project '${projectNo}'`);
     }
 
+    let map = docData.labourDetails || {};
+    if (map.headLabourId && typeof map.headLabourId === 'string') {
+        map = { [map.headLabourId]: map };
+    }
+
+    if (!map[labourId]) {
+        throw new Error(`Head Labour ID '${labourId}' is not assigned to this work entry.`);
+    }
+
     const normalizedType = type.trim().toUpperCase();
-    const existingSubMap = { ...(docData.labourDetails?.subLabourDetails || {}) };
+    const entry = map[labourId];
+    const existingSubMap = { ...(entry.subLabourDetails || {}) };
 
     if (!(normalizedType in existingSubMap)) {
-        throw new Error(`Sub-labour type '${normalizedType}' not found in this work`);
+        throw new Error(`Sub-labour type '${normalizedType}' not found for this labour in this work`);
     }
 
     delete existingSubMap[normalizedType];
 
-    const updatedLabourDetails = {
-        ...(docData.labourDetails || {}),
-        subLabourDetails: existingSubMap,
-    };
+    map[labourId].subLabourDetails = existingSubMap;
+    map[labourId].totalLabourCount = Object.values(existingSubMap).reduce((sum, val) => sum + val, 0);
 
-    await workRef.update({ labourDetails: updatedLabourDetails, updatedAt: now() });
+    await workRef.update({ labourDetails: map, updatedAt: now() });
 
     const updated = await workRef.get();
     const finalData = { workId: updated.id, ...updated.data() };

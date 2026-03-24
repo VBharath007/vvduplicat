@@ -145,7 +145,7 @@ exports.assignLabourToWork = async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 exports.updateSubLabourForWork = async (req, res) => {
     try {
-        const { projectNo, workId } = req.params;
+        const { projectNo, workId, labourId } = req.params;
         const { subLabourDetails } = req.body;
 
         if (!subLabourDetails || typeof subLabourDetails !== 'object') {
@@ -153,7 +153,7 @@ exports.updateSubLabourForWork = async (req, res) => {
         }
 
         const result = await workService.updateSubLabourForWork(
-            projectNo, workId, subLabourDetails
+            projectNo, workId, labourId, subLabourDetails
         );
         res.status(200).json({ success: true, data: result });
     } catch (error) {
@@ -172,14 +172,54 @@ exports.getLabourByProject = async (req, res) => {
         const { projectNo } = req.params;
         const works = await workService.getWorks(projectNo);
 
-        const projectLabourHistory = works.map(w => ({
-            workId: w.workId,
-            date: w.date,
-            workName: w.workName,
-            headLabour: w.labourDetails?.headLabourName,
-            headLabourPhone: w.labourDetails?.headLabourPhoneNumber,
-            distribution: w.labourDetails?.subLabourDetails,
-            totalLabourCount: w.labourDetails?.totalLabourCount ?? 0,
+        const labourMap = {};
+
+        works.forEach(w => {
+            const lmap = w.labourDetails || {};
+
+            const addLabour = (lEntry) => {
+                if (!lEntry.headLabourName) return;
+
+                const key = lEntry.headLabourId || lEntry.headLabourName;
+
+                if (!labourMap[key]) {
+                    labourMap[key] = {
+                        headLabourId: lEntry.headLabourId,
+                        headLabourName: lEntry.headLabourName,
+                        headLabourPhone: lEntry.headLabourPhoneNumber,
+                        distribution: {},
+                        totalLabourCount: 0,
+                    };
+                }
+
+                const dest = labourMap[key];
+
+                // Aggregate sub-labours
+                if (lEntry.subLabourDetails) {
+                    Object.entries(lEntry.subLabourDetails).forEach(([type, count]) => {
+                        dest.distribution[type] = (dest.distribution[type] || 0) + (Number(count) || 0);
+                    });
+                }
+
+                dest.totalLabourCount += (lEntry.totalLabourCount ?? 0);
+            };
+
+            // Legacy single-object support
+            if (lmap.headLabourId && typeof lmap.headLabourId === 'string') {
+                addLabour(lmap);
+                return;
+            }
+
+            // Multi-head-labour support (keyed map)
+            Object.values(lmap).forEach(l => addLabour(l));
+        });
+
+        const projectLabourHistory = Object.values(labourMap).map(l => ({
+            headLabourId: l.headLabourId,
+            headLabour: l.headLabourName,
+            headLabourPhone: l.headLabourPhone,
+            distribution: l.distribution,
+            totalLabourCount: l.totalLabourCount
         }));
 
         res.json({ success: true, projectNo, history: projectLabourHistory });
@@ -188,20 +228,81 @@ exports.getLabourByProject = async (req, res) => {
     }
 };
 // ═══════════════════════════════════════════════════════════════════════════
+// Global Labour Retrieval (All Projects)
+// GET /api/works/labour
+// ═══════════════════════════════════════════════════════════════════════════
+exports.getAllLabour = async (req, res) => {
+    try {
+        const works = await workService.getWorks(); // null means all projects
+
+        const labourMap = {};
+
+        works.forEach(w => {
+            const lmap = w.labourDetails || {};
+
+            const addLabour = (lEntry) => {
+                if (!lEntry.headLabourName) return;
+
+                const key = lEntry.headLabourId || lEntry.headLabourName;
+
+                if (!labourMap[key]) {
+                    labourMap[key] = {
+                        headLabourId: lEntry.headLabourId,
+                        headLabourName: lEntry.headLabourName,
+                        headLabourPhone: lEntry.headLabourPhoneNumber,
+                        distribution: {},
+                        totalLabourCount: 0,
+                    };
+                }
+
+                const dest = labourMap[key];
+
+                if (lEntry.subLabourDetails) {
+                    Object.entries(lEntry.subLabourDetails).forEach(([type, count]) => {
+                        dest.distribution[type] = (dest.distribution[type] || 0) + (Number(count) || 0);
+                    });
+                }
+
+                dest.totalLabourCount += (lEntry.totalLabourCount ?? 0);
+            };
+
+            if (lmap.headLabourId && typeof lmap.headLabourId === 'string') {
+                addLabour(lmap);
+                return;
+            }
+
+            Object.values(lmap).forEach(l => addLabour(l));
+        });
+
+        const globalLabourHistory = Object.values(labourMap).map(l => ({
+            headLabourId: l.headLabourId,
+            headLabour: l.headLabourName,
+            headLabourPhone: l.headLabourPhone,
+            distribution: l.distribution,
+            totalLabourCount: l.totalLabourCount
+        }));
+
+        res.json({ success: true, history: globalLabourHistory });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Edit one sub-labour type count
 // PUT /api/works/project/:projectNo/:workId/sublabour/:type
 // Body: { "count": 5 }
 // ═══════════════════════════════════════════════════════════════════════════
 exports.editSubLabourCount = async (req, res) => {
     try {
-        const { projectNo, workId, type } = req.params;
+        const { projectNo, workId, labourId, type } = req.params;
         const { count } = req.body;
 
         if (count === undefined || count === null) {
             return res.status(400).json({ success: false, message: "'count' is required in body" });
         }
 
-        const result = await workService.editSubLabourCount(projectNo, workId, type, count);
+        const result = await workService.editSubLabourCount(projectNo, workId, labourId, type, count);
         res.status(200).json({ success: true, data: result });
     } catch (error) {
         res.status(400).json({ success: false, message: error.message });
@@ -214,8 +315,8 @@ exports.editSubLabourCount = async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 exports.deleteSubLabourType = async (req, res) => {
     try {
-        const { projectNo, workId, type } = req.params;
-        const result = await workService.deleteSubLabourType(projectNo, workId, type);
+        const { projectNo, workId, labourId, type } = req.params;
+        const result = await workService.deleteSubLabourType(projectNo, workId, labourId, type);
         res.status(200).json({ success: true, data: result });
     } catch (error) {
         res.status(400).json({ success: false, message: error.message });

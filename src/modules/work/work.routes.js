@@ -13,7 +13,8 @@ router.get("/project/:projectNo/labour", isAdmin, workController.getLabourByProj
 router.get("/project/:projectNo/:workId", isAdmin, workController.getWorkById);
 router.get("/project/:projectNo", isAdmin, workController.getWorks);
 
-// ── Reverse lookup: all works a labour was assigned to ───────────────────────
+// ── Global & Reverse Lookup ───────────────────────────────────────────────────
+router.get("/labour", isAdmin, workController.getAllLabour);
 // GET /api/works/labour/:labourId
 router.get("/labour/:labourId", isAdmin, workController.getWorksByLabour);
 
@@ -21,12 +22,12 @@ router.get("/labour/:labourId", isAdmin, workController.getWorksByLabour);
 router.post("/project/:projectNo/:workId/master", isAdmin, workController.assignLabourToWork);
 
 // ── Sub-Labour CRUD ──────────────────────────────────────────────────────────
-// POST   /api/works/project/:projectNo/:workId/sublabour        → add / merge counts
-// PUT    /api/works/project/:projectNo/:workId/sublabour/:type  → edit one type count
-// DELETE /api/works/project/:projectNo/:workId/sublabour/:type  → delete one type entry
-router.post("/project/:projectNo/:workId/sublabour", isAdmin, workController.updateSubLabourForWork);
-router.put("/project/:projectNo/:workId/sublabour/:type", isAdmin, workController.editSubLabourCount);
-router.delete("/project/:projectNo/:workId/sublabour/:type", isAdmin, workController.deleteSubLabourType);
+// POST   /api/works/project/:projectNo/:workId/:labourId/sublabour        → add / merge counts
+// PUT    /api/works/project/:projectNo/:workId/:labourId/sublabour/:type  → edit one type count
+// DELETE /api/works/project/:projectNo/:workId/:labourId/sublabour/:type  → delete one type entry
+router.post("/project/:projectNo/:workId/:labourId/sublabour", isAdmin, workController.updateSubLabourForWork);
+router.put("/project/:projectNo/:workId/:labourId/sublabour/:type", isAdmin, workController.editSubLabourCount);
+router.delete("/project/:projectNo/:workId/:labourId/sublabour/:type", isAdmin, workController.deleteSubLabourType);
 
 // ── Standard Work CRUD ──────────────────────────────────────────────────────
 router.post("/", isAdmin, workController.createWork);
