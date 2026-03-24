@@ -517,13 +517,24 @@ exports.deleteSubLabourType = async (projectNo, workId, labourId, type) => {
 exports.getWorksByLabour = async (labourId) => {
     if (!labourId) throw new Error("labourId is required");
 
-    const snapshot = await worksCollection
-        .where("labourDetails.headLabourId", "==", labourId)
-        .get();
+    // We check both the legacy flat object structure and the new keyed map structure
+    const [oldSnapshot, newSnapshot] = await Promise.all([
+        worksCollection.where("labourDetails.headLabourId", "==", labourId).get(),
+        worksCollection.where(`labourDetails.${labourId}.headLabourId`, "==", labourId).get()
+    ]);
 
-    if (snapshot.empty) return { projects: [], totalWorks: 0 };
+    const worksMap = new Map();
 
-    const works = snapshot.docs.map(doc => ({ workId: doc.id, ...doc.data() }));
+    if (!oldSnapshot.empty) {
+        oldSnapshot.docs.forEach(doc => worksMap.set(doc.id, { workId: doc.id, ...doc.data() }));
+    }
+    if (!newSnapshot.empty) {
+        newSnapshot.docs.forEach(doc => worksMap.set(doc.id, { workId: doc.id, ...doc.data() }));
+    }
+
+    if (worksMap.size === 0) return { projects: [], totalWorks: 0 };
+
+    const works = Array.from(worksMap.values());
 
     // Group by projectNo
     const projectMap = {};
@@ -535,12 +546,21 @@ exports.getWorksByLabour = async (labourId) => {
                 works: [],
             };
         }
+
+        // Identify correct entry (legacy vs new keyed map)
+        let labourEntry = {};
+        if (w.labourDetails && w.labourDetails.headLabourId === labourId) {
+            labourEntry = w.labourDetails;
+        } else if (w.labourDetails && w.labourDetails[labourId]) {
+            labourEntry = w.labourDetails[labourId];
+        }
+
         projectMap[pNo].works.push({
             workId: w.workId,
             workName: w.work || w.workName,
             date: w.date,
-            subLabourDetails: w.labourDetails?.subLabourDetails || {},
-            totalLabourCount: w.labourDetails?.totalLabourCount || 0,
+            subLabourDetails: labourEntry.subLabourDetails || {},
+            totalLabourCount: labourEntry.totalLabourCount || 0,
         });
     });
 
