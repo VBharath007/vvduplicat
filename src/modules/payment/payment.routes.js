@@ -15,7 +15,7 @@ const isAdmin = [verifyToken, authorize(["admin"])];
 // DELETE /api/payments/:paymentId               → delete payment
 
 // IMPORTANT: /detail/:paymentId must come before /:labourId to avoid conflict
-router.post("/", isAdmin, paymentController.createPayment);
+router.post("/:projectNo/:labourId", isAdmin, paymentController.createPayment);
 router.get("/detail/:paymentId", isAdmin, paymentController.getPaymentById);
 router.get("/:labourId/:projectNo", isAdmin, paymentController.getPayments);
 router.get("/:labourId", isAdmin, paymentController.getPayments);

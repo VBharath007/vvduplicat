@@ -658,9 +658,12 @@ exports.payDealerProjectPayment = async (phoneNumber, projectNo, amount, method)
         .get();
 
     let totalPending = 0;
+    let dealerName = ""; // Capture dealerName
+
     if (!snapshot.empty) {
         snapshot.forEach(doc => {
             const d = doc.data();
+            if (!dealerName && d.dealerName) dealerName = d.dealerName;
             totalPending += (Number(d.totalAmount) || 0) - (Number(d.paidAmount) || 0);
         });
     }
@@ -766,7 +769,7 @@ exports.payDealerProjectPayment = async (phoneNumber, projectNo, amount, method)
                 projectNo: b.data.projectNo,
                 amount: appliedAmount,             // ← THIS payment only (e.g. ₹500)
                 particular: `Material Payment – ${b.data.materialName}`,
-                remark: `Material Payment – ${b.data.materialName} (Receipt: ${b.id})`,
+                remark: b.data.dealerName ? `Material Payment – ${b.data.materialName} (Dealer: ${b.data.dealerName})` : `Material Payment – ${b.data.materialName}`,
                 type: "materialPayment",
                 materialId: b.data.materialId,
                 dealerName: b.data.dealerName || "",
@@ -823,6 +826,7 @@ exports.payDealerProjectPayment = async (phoneNumber, projectNo, amount, method)
 
     return {
         success: true,
+        dealerName, // Send dealer name in response back to UI
         projectNo,
         logs: [{
             amount: paymentAmount,

@@ -112,7 +112,7 @@ exports.createWork = async (workData) => {
         delete updatePayload.createdAt;
         // Don't overwrite existing labourDetails on upsert if it already has one!
         if (existingDoc.data().labourDetails !== undefined) {
-            delete updatePayload.labourDetails; 
+            delete updatePayload.labourDetails;
         }
         updatePayload.updatedAt = now();
 
@@ -560,6 +560,24 @@ exports.getWorksByLabour = async (labourId) => {
 
     const works = Array.from(worksMap.values());
 
+    // Enrich missing manual fields
+    for (let i = 0; i < works.length; i++) {
+        works[i].labourDetails = await buildLabourDetails(works[i].labourDetails);
+    }
+
+    // Resolve project names (efficient batch fetch)
+    const uniqueProjectNos = [...new Set(works.map(w => w.projectNo))];
+    const projectNames = {};
+    if (uniqueProjectNos.length > 0) {
+        for (let i = 0; i < uniqueProjectNos.length; i += 30) {
+            const chunk = uniqueProjectNos.slice(i, i + 30);
+            const snap = await db.collection("projects").where("projectNo", "in", chunk).get();
+            snap.forEach(doc => {
+                projectNames[doc.data().projectNo] = doc.data().projectName;
+            });
+        }
+    }
+
     // Group by projectNo
     const projectMap = {};
     works.forEach(w => {
@@ -567,18 +585,17 @@ exports.getWorksByLabour = async (labourId) => {
         if (!projectMap[pNo]) {
             projectMap[pNo] = {
                 projectNo: pNo,
+                projectName: projectNames[pNo] || pNo, // Attach projectName here!
                 works: [],
             };
         }
 
-        // Identify correct entry (legacy vs new keyed map vs flutter legacy "labourEntries")
+        // Identify correct entry
         let subLabourDetails = {};
         let totalLabourCount = 0;
 
-        if (w.labourDetails && w.labourDetails.headLabourId === labourId) {
-            subLabourDetails = w.labourDetails.subLabourDetails || {};
-            totalLabourCount = w.labourDetails.totalLabourCount || 0;
-        } else if (w.labourDetails && w.labourDetails[labourId]) {
+        // Since we ran buildLabourDetails, it's a keyed map now
+        if (w.labourDetails && w.labourDetails[labourId]) {
             subLabourDetails = w.labourDetails[labourId].subLabourDetails || {};
             totalLabourCount = w.labourDetails[labourId].totalLabourCount || 0;
         } else if (w.labourEntries && Array.isArray(w.labourEntries)) {
@@ -591,13 +608,19 @@ exports.getWorksByLabour = async (labourId) => {
             });
         }
 
-        projectMap[pNo].works.push({
-            workId: w.workId,
-            workName: w.work || w.workName,
-            date: w.date,
-            subLabourDetails,
-            totalLabourCount,
-        });
+        // Only include this day if the labour actually participated with count > 0
+        if (totalLabourCount > 0) {
+            projectMap[pNo].works.push({
+                workId: w.workId,
+                work: w.work || w.workName,               // Fallback matching general API
+                workName: w.work || w.workName,
+                projectName: projectNames[pNo] || pNo, // Fallback project name
+                date: w.date,
+                tomorrowWork: w.tomorrowWork || "",
+                subLabourDetails,                      // specific to THIS labour
+                totalLabourCount,                      // specific to THIS labour
+            });
+        }
     });
 
     // Sort each project's works by date desc
@@ -611,9 +634,12 @@ exports.getWorksByLabour = async (labourId) => {
         totalWorks: p.works.length,
     }));
 
+    // Remove any projects that ended up with 0 works after filtering
+    const validProjects = projects.filter(p => p.totalWorks > 0);
+
     return {
         labourId,
-        projects,
-        totalWorks: works.length,
+        projects: validProjects,
+        totalWorks: validProjects.reduce((sum, p) => sum + p.totalWorks, 0),
     };
 };

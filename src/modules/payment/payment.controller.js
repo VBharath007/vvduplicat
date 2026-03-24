@@ -5,7 +5,12 @@ const paymentService = require("./payment.service");
 // ═══════════════════════════════════════════════════════════════════════════
 exports.createPayment = async (req, res) => {
     try {
-        const result = await paymentService.createPayment(req.body);
+        const payload = {
+            ...req.body,
+            projectNo: req.params.projectNo,
+            labourId: req.params.labourId,
+        };
+        const result = await paymentService.createPayment(payload);
         res.status(201).json({ success: true, data: result });
     } catch (error) {
         res.status(400).json({ success: false, message: error.message });

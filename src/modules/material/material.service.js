@@ -57,7 +57,7 @@ async function _createMaterialExpense(receiptId, receivedData, paidAmount) {
         projectNo: receivedData.projectNo,
         amount: paidAmount,
         particular: `Material Purchase: ${receivedData.materialName}`,
-        remark: `Material Purchase: ${receivedData.materialName}`,
+        remark: receivedData.dealerName ? `Material Purchase: ${receivedData.materialName} (Dealer: ${receivedData.dealerName})` : `Material Purchase: ${receivedData.materialName}`,
         type: "materialPayment",
         materialId: receivedData.materialId,
         receiptId,
