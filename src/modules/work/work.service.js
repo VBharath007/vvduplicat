@@ -95,7 +95,8 @@ exports.createWork = async (workData) => {
         workName: name,
         tomorrowWork: (tomorrowWork || "").trim(),
         date: workDate,
-        createdAt: now()
+        createdAt: now(),
+        labourDetails: {} // Standardize by ensuring new entries have this property
     };
 
     // ── UPSERT: unique key = projectNo + work ──
@@ -109,6 +110,10 @@ exports.createWork = async (workData) => {
         const existingDoc = existingSnapshot.docs[0];
         const updatePayload = { ...payload };
         delete updatePayload.createdAt;
+        // Don't overwrite existing labourDetails on upsert if it already has one!
+        if (existingDoc.data().labourDetails !== undefined) {
+            delete updatePayload.labourDetails; 
+        }
         updatePayload.updatedAt = now();
 
         await existingDoc.ref.update(updatePayload);
@@ -517,20 +522,39 @@ exports.deleteSubLabourType = async (projectNo, workId, labourId, type) => {
 exports.getWorksByLabour = async (labourId) => {
     if (!labourId) throw new Error("labourId is required");
 
-    // We check both the legacy flat object structure and the new keyed map structure
-    const [oldSnapshot, newSnapshot] = await Promise.all([
+    // Fetch master labour to get name for legacy string-based query
+    let master = null;
+    try {
+        master = await labourService.getLabourMasterById(labourId);
+    } catch (_) { } // Proceed even if master not found
+
+    let legacyNames = [];
+    if (master && master.name) {
+        const raw = master.name;
+        const lower = raw.toLowerCase();
+        const upper = raw.toUpperCase();
+        const title = lower.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+        legacyNames = Array.from(new Set([raw, lower, upper, title]));
+    }
+
+    const queries = [
         worksCollection.where("labourDetails.headLabourId", "==", labourId).get(),
         worksCollection.where(`labourDetails.${labourId}.headLabourId`, "==", labourId).get()
-    ]);
+    ];
+
+    // If we have name variations, also search by legacy "labourName"
+    if (legacyNames.length > 0) {
+        queries.push(worksCollection.where("labourName", "in", legacyNames).get());
+    }
+
+    const snapshots = await Promise.all(queries);
 
     const worksMap = new Map();
-
-    if (!oldSnapshot.empty) {
-        oldSnapshot.docs.forEach(doc => worksMap.set(doc.id, { workId: doc.id, ...doc.data() }));
-    }
-    if (!newSnapshot.empty) {
-        newSnapshot.docs.forEach(doc => worksMap.set(doc.id, { workId: doc.id, ...doc.data() }));
-    }
+    snapshots.forEach(snapshot => {
+        if (!snapshot.empty) {
+            snapshot.docs.forEach(doc => worksMap.set(doc.id, { workId: doc.id, ...doc.data() }));
+        }
+    });
 
     if (worksMap.size === 0) return { projects: [], totalWorks: 0 };
 
@@ -547,20 +571,32 @@ exports.getWorksByLabour = async (labourId) => {
             };
         }
 
-        // Identify correct entry (legacy vs new keyed map)
-        let labourEntry = {};
+        // Identify correct entry (legacy vs new keyed map vs flutter legacy "labourEntries")
+        let subLabourDetails = {};
+        let totalLabourCount = 0;
+
         if (w.labourDetails && w.labourDetails.headLabourId === labourId) {
-            labourEntry = w.labourDetails;
+            subLabourDetails = w.labourDetails.subLabourDetails || {};
+            totalLabourCount = w.labourDetails.totalLabourCount || 0;
         } else if (w.labourDetails && w.labourDetails[labourId]) {
-            labourEntry = w.labourDetails[labourId];
+            subLabourDetails = w.labourDetails[labourId].subLabourDetails || {};
+            totalLabourCount = w.labourDetails[labourId].totalLabourCount || 0;
+        } else if (w.labourEntries && Array.isArray(w.labourEntries)) {
+            // Handle legacy array "labourEntries" from Flutter app
+            w.labourEntries.forEach(entry => {
+                const type = (entry.workType || "UNKNOWN").toUpperCase();
+                const qty = Number(entry.quantity) || 0;
+                subLabourDetails[type] = (subLabourDetails[type] || 0) + qty;
+                totalLabourCount += qty;
+            });
         }
 
         projectMap[pNo].works.push({
             workId: w.workId,
             workName: w.work || w.workName,
             date: w.date,
-            subLabourDetails: labourEntry.subLabourDetails || {},
-            totalLabourCount: labourEntry.totalLabourCount || 0,
+            subLabourDetails,
+            totalLabourCount,
         });
     });
 

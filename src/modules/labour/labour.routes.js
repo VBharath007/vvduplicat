@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const labourController = require("./labour.controller");
+const workController = require("../work/work.controller"); // Import work controller here
 const { verifyToken } = require("../../middleware/auth.middleware");
 const { authorize } = require("../../middleware/role.middleware");
 
@@ -12,7 +13,7 @@ router.get("/master", isAdmin, labourController.getAllHeadLabours);
 router.get("/master/:id", isAdmin, labourController.getHeadLabourById);
 router.put("/master/:id", isAdmin, labourController.updateMasterLabour);
 router.delete("/master/:id", isAdmin, labourController.deleteMasterLabour);
-
+router.get("/master/:labourId/works", isAdmin, workController.getWorksByLabour); // Fix: use workController
 // ─── Sub-Labour Type CRUD ────────────────────────────────────────────────────
 // POST   /api/labours/sublabour/other      → new type add
 // GET    /api/labours/sublabour/other      → all types list

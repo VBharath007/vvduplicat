@@ -12,11 +12,11 @@ router.get("/project/:projectNo/week", isAdmin, workController.getWorksByWeek);
 router.get("/project/:projectNo/labour", isAdmin, workController.getLabourByProject);
 router.get("/project/:projectNo/:workId", isAdmin, workController.getWorkById);
 router.get("/project/:projectNo", isAdmin, workController.getWorks);
+router.get("/master/:labourId/works", isAdmin, workController.getWorksByLabour);
 
-// ── Global & Reverse Lookup ───────────────────────────────────────────────────
-router.get("/labour", isAdmin, workController.getAllLabour);
+// ── Reverse lookup: all works a labour was assigned to ───────────────────────
 // GET /api/works/labour/:labourId
-router.get("/labour/:labourId", isAdmin, workController.getWorksByLabour);
+
 
 // ── Hierarchical Labour Assignment ──────────────────────────────────────────
 router.post("/project/:projectNo/:workId/master", isAdmin, workController.assignLabourToWork);
