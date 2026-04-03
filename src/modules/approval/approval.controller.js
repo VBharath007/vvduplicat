@@ -93,40 +93,19 @@ exports.updateStatus = async (req, res) => {
     }
 };
 
-
-
 exports.updateExpense = async (req, res) => {
     try {
-
         const { expenseId } = req.params;
-        const { amount, particularRemark, date } = req.body;
-
-        const docRef = approvalExpensesCollection.doc(expenseId);
-        const doc = await docRef.get();
-
-        if (!doc.exists) {
-            return res.status(404).json({ message: "Expense not found" });
-        }
-
-        await docRef.update({
-            amount: Number(amount),
-            particularRemark: particularRemark || "",
-            date: date
-        });
-
-        res.json({
-            message: "Expense updated successfully"
-        });
-
+        const result = await approvalService.updateExpense(expenseId, req.body);
+        res.status(200).json(result);
     } catch (error) {
+        console.error("Update Expense Error:", error);
         res.status(500).json({ error: error.message });
     }
 };
 
-
 exports.deleteExpense = async (req, res) => {
     try {
-
         const { expenseId } = req.params;
 
         const docRef = approvalExpensesCollection.doc(expenseId);
@@ -137,32 +116,24 @@ exports.deleteExpense = async (req, res) => {
         }
 
         await docRef.delete();
-
-        res.json({
-            message: "Expense deleted successfully"
-        });
+        res.json({ message: "Expense deleted successfully" });
 
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 };
 
-
 exports.deleteApproval = async (req, res) => {
     try {
-
         const { id } = req.params;
 
         const approvalRef = approvalsCollection.doc(id);
         const approvalDoc = await approvalRef.get();
 
         if (!approvalDoc.exists) {
-            return res.status(404).json({
-                message: "Approval not found"
-            });
+            return res.status(404).json({ message: "Approval not found" });
         }
 
-        // 🔹 Delete all advances
         const advancesSnap = await approvalAdvancesCollection
             .where("approvalId", "==", id)
             .get();
@@ -173,7 +144,6 @@ exports.deleteApproval = async (req, res) => {
             batch.delete(doc.ref);
         });
 
-        // 🔹 Delete all expenses
         const expensesSnap = await approvalExpensesCollection
             .where("approvalId", "==", id)
             .get();
@@ -182,27 +152,19 @@ exports.deleteApproval = async (req, res) => {
             batch.delete(doc.ref);
         });
 
-        // 🔹 Delete approval document
         batch.delete(approvalRef);
-
         await batch.commit();
 
-        res.json({
-            message: "Approval and related expenses & advances deleted successfully"
-        });
+        res.json({ message: "Approval and related expenses & advances deleted successfully" });
 
     } catch (error) {
         console.error("Delete Approval Error:", error);
-
-        res.status(500).json({
-            error: error.message
-        });
+        res.status(500).json({ error: error.message });
     }
 };
 
 exports.updateAdvance = async (req, res) => {
     try {
-
         const { advanceId } = req.params;
         const { amountReceived, remark, date } = req.body;
 
@@ -215,29 +177,16 @@ exports.updateAdvance = async (req, res) => {
 
         const updateData = {};
 
-        if (amountReceived !== undefined) {
-            updateData.amountReceived = Number(amountReceived);
-        }
-
-        if (remark !== undefined) {
-            updateData.remark = remark;
-        }
-
-        if (date !== undefined) {
-            updateData.date = date;
-        }
+        if (amountReceived !== undefined) updateData.amountReceived = Number(amountReceived);
+        if (remark !== undefined) updateData.remark = remark;
+        if (date !== undefined) updateData.date = date;
 
         if (Object.keys(updateData).length === 0) {
-            return res.status(400).json({
-                message: "No valid fields provided for update"
-            });
+            return res.status(400).json({ message: "No valid fields provided for update" });
         }
 
         await docRef.update(updateData);
-
-        res.json({
-            message: "Advance updated successfully"
-        });
+        res.json({ message: "Advance updated successfully" });
 
     } catch (error) {
         console.error("Update Advance Error:", error);
@@ -245,10 +194,8 @@ exports.updateAdvance = async (req, res) => {
     }
 };
 
-
 exports.deleteAdvance = async (req, res) => {
     try {
-
         const { advanceId } = req.params;
 
         const docRef = approvalAdvancesCollection.doc(advanceId);
@@ -259,20 +206,15 @@ exports.deleteAdvance = async (req, res) => {
         }
 
         await docRef.delete();
-
-        res.json({
-            message: "Advance deleted successfully"
-        });
+        res.json({ message: "Advance deleted successfully" });
 
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 };
 
-
 exports.updateTotalFees = async (req, res) => {
     try {
-
         const { id } = req.params;
         const { totalFees } = req.body;
 
@@ -287,15 +229,12 @@ exports.updateTotalFees = async (req, res) => {
             "financialDetails.totalFees": Number(totalFees)
         });
 
-        res.json({
-            message: "Total fees updated successfully"
-        });
+        res.json({ message: "Total fees updated successfully" });
 
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 };
-
 
 exports.addProjectType = async (req, res) => {
     try {
@@ -333,13 +272,13 @@ exports.getProjectTypes = async (req, res) => {
     }
 };
 
-exports.updateExpense = async (req, res) => {
+// --- Date Range Summary --- //
+exports.getSummaryByDateRange = async (req, res) => {
     try {
-        const { expenseId } = req.params;
-        const result = await approvalService.updateExpense(expenseId, req.body);
+        const { startDate, endDate } = req.query;
+        const result = await approvalService.getSummaryByDateRange(startDate, endDate);
         res.status(200).json(result);
     } catch (error) {
-        console.error("Update Expense Error:", error);
-        res.status(500).json({ error: error.message });
+        res.status(400).json({ error: error.message });
     }
-};
+};

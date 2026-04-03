@@ -95,8 +95,8 @@ const ensureProjectTypeExists = async (type) => {
 exports.createApproval = async (data) => {
     if (!data.projectNo) throw new Error("projectNo is required");
 
-    // Backward compatibility: use projectType if present, else workStatus
-    const pType = data.projectType || data.workStatus;
+    // ✅ FIX: Only use projectType, do NOT treat workStatus as a projectType fallback
+    const pType = data.projectType;
     if (pType) await ensureProjectTypeExists(pType);
 
     const docRef = approvalsCollection.doc(data.projectNo);
@@ -107,14 +107,12 @@ exports.createApproval = async (data) => {
 
     const newApproval = {
         ...data,
-        projectType: pType || "", // normalize to projectType
+        projectType: pType || "",
+        // ✅ FIX: workStatus is preserved from ...data, NOT deleted
         createdAt: getCurrentDate(),
         statusTracking: data.statusTracking || { currentStatus: "ongoing" },
         financialDetails: data.financialDetails || { totalFees: 0 }
     };
-
-    // Clean up old field if it existed
-    delete newApproval.workStatus;
 
     await docRef.set(newApproval);
     return { id: data.projectNo, ...newApproval };
@@ -122,7 +120,7 @@ exports.createApproval = async (data) => {
 
 exports.getApprovals = async () => {
     const snap = await approvalsCollection
-        .orderBy("projectNo", "asc") // ascending order
+        .orderBy("projectNo", "asc")
         .get();
 
     const approvals = [];
@@ -167,12 +165,12 @@ exports.updateApproval = async (id, updateData) => {
         docRef = snap.docs[0].ref;
     }
 
-    const pType = updateData.projectType || updateData.workStatus;
+    // ✅ FIX: Only use projectType, do NOT treat workStatus as a projectType fallback
+    const pType = updateData.projectType;
     if (pType) {
         await ensureProjectTypeExists(pType);
-        updateData.projectType = pType; // normalize
-        delete updateData.workStatus;
     }
+    // ✅ FIX: workStatus stays in updateData as its own field, NOT deleted
 
     await docRef.update(updateData);
     return this.getApprovalById(id);
@@ -180,12 +178,10 @@ exports.updateApproval = async (id, updateData) => {
 
 // --- Advances --- //
 exports.addAdvance = async (id, payload) => {
-    // fallback: if project doesn't exist using id, try where projectNo=id just in case
     let docRef = approvalsCollection.doc(id);
     let doc = await docRef.get();
 
     if (!doc.exists) {
-        // Just in case they created an approval using an auto-ID earlier
         const snap = await approvalsCollection.where("projectNo", "==", id).get();
         if (snap.empty) throw new Error("Approval not found");
         docRef = snap.docs[0].ref;
@@ -194,7 +190,6 @@ exports.addAdvance = async (id, payload) => {
     const advances = payload.approvalAdvancePaidFees || payload;
     const advancesArray = Array.isArray(advances) ? advances : [advances];
 
-    // Validation: Check if total advances exceed total fees
     const additionalAmount = advancesArray.reduce((sum, a) => sum + (Number(a.amountReceived) || 0), 0);
     const currentApproval = await this.getApprovalById(id);
     const totalFees = Number(currentApproval.financialDetails?.totalFees) || 0;
@@ -288,10 +283,7 @@ exports.updateStatus = async (id, currentStatus) => {
     return this.getApprovalById(id);
 };
 
-
-
 exports.updateExpense = async (expenseId, updateData) => {
-
     const docRef = approvalExpensesCollection.doc(expenseId);
     const doc = await docRef.get();
 
@@ -305,14 +297,10 @@ exports.updateExpense = async (expenseId, updateData) => {
         date: updateData.date
     });
 
-    return {
-        message: "Expense updated successfully"
-    };
+    return { message: "Expense updated successfully" };
 };
 
-
 exports.deleteExpense = async (expenseId) => {
-
     const docRef = approvalExpensesCollection.doc(expenseId);
     const doc = await docRef.get();
 
@@ -321,15 +309,10 @@ exports.deleteExpense = async (expenseId) => {
     }
 
     await docRef.delete();
-
-    return {
-        message: "Expense deleted successfully"
-    };
+    return { message: "Expense deleted successfully" };
 };
 
-
 exports.updateAdvance = async (advanceId, updateData) => {
-
     const docRef = approvalAdvancesCollection.doc(advanceId);
     const doc = await docRef.get();
 
@@ -343,13 +326,10 @@ exports.updateAdvance = async (advanceId, updateData) => {
         date: updateData.date
     });
 
-    return {
-        message: "Advance updated successfully"
-    };
+    return { message: "Advance updated successfully" };
 };
 
 exports.deleteAdvance = async (advanceId) => {
-
     const docRef = approvalAdvancesCollection.doc(advanceId);
     const doc = await docRef.get();
 
@@ -358,16 +338,11 @@ exports.deleteAdvance = async (advanceId) => {
     }
 
     await docRef.delete();
-
-    return {
-        message: "Advance deleted successfully"
-    };
+    return { message: "Advance deleted successfully" };
 };
-
 
 exports.updateTotalFees = async (req, res) => {
     try {
-
         const { id } = req.params;
         const { totalFees } = req.body;
 
@@ -378,11 +353,10 @@ exports.updateTotalFees = async (req, res) => {
             return res.status(404).json({ message: "Approval not found" });
         }
 
-        // Validation: totalFees cannot be less than advancedPaid
         const calculations = await getApprovalCalculations(id, totalFees);
         if (Number(totalFees) < calculations.advancedPaid) {
-            return res.status(400).json({ 
-                error: `Total fees (${totalFees}) cannot be less than advanced amount already paid (${calculations.advancedPaid})` 
+            return res.status(400).json({
+                error: `Total fees (${totalFees}) cannot be less than advanced amount already paid (${calculations.advancedPaid})`
             });
         }
 
@@ -390,7 +364,6 @@ exports.updateTotalFees = async (req, res) => {
             "financialDetails.totalFees": Number(totalFees)
         });
 
-        // reuse existing calculations
         res.json({
             message: "Total fees updated successfully",
             calculations
@@ -400,10 +373,6 @@ exports.updateTotalFees = async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 };
-
-
-
-
 
 exports.confirmProjectType = async (id) => {
     const docRef = projectTypeCollection.doc(id);
@@ -431,15 +400,11 @@ exports.getProjectTypes = async () => {
         ...doc.data()
     }));
 
-    // Returns approved items or items with no status (defaulting to approved)
     return typesFromDb
         .filter(s => s.status === "approved" || !s.status)
         .sort((a, b) => (a.name || "").localeCompare(b.name || ""));
 };
 
-/**
- * Handles adding new entries like "proccessing2" into the real collection
- */
 exports.addProjectType = async (name) => {
     if (!name) throw new Error("Project type name required");
     const upperName = name.toUpperCase();
@@ -454,9 +419,120 @@ exports.addProjectType = async (name) => {
 
     const docRef = await projectTypeCollection.add({
         name: upperName,
-        status: "approved", // Changed from "pending" to "approved"
+        status: "approved",
         createdAt: new Date().toISOString()
     });
 
     return { id: docRef.id, message: "Project type added successfully" };
+};
+
+// --- Date Range Summary --- //
+exports.getSummaryByDateRange = async (startDate, endDate) => {
+    if (!startDate || !endDate) {
+        throw new Error("startDate and endDate are required (DD-MM-YYYY)");
+    }
+
+    // Parse query param dates (DD-MM-YYYY)
+    const parseQueryDate = (str) => {
+        const [d, m, y] = str.split("-").map(Number);
+        return new Date(y, m - 1, d);
+    };
+
+    const start = parseQueryDate(startDate);
+    const end   = parseQueryDate(endDate);
+
+    // Set end to end of day so records created on endDate are included
+    end.setHours(23, 59, 59, 999);
+
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+        throw new Error("Invalid date format. Use DD-MM-YYYY");
+    }
+    if (start > end) {
+        throw new Error("startDate must be before or equal to endDate");
+    }
+
+    // Parse createdAt from Firestore — handles BOTH formats:
+    // 1. "DD-MM-YYYY"          ← your app's format (new records)
+    // 2. "2025-03-28T10:..."   ← ISO string (older records)
+    // 3. Firestore Timestamp   ← if stored as Timestamp object
+    const parseCreatedAt = (createdAt) => {
+        if (!createdAt) return null;
+
+        // Firestore Timestamp object
+        if (typeof createdAt === "object" && createdAt._seconds) {
+            return new Date(createdAt._seconds * 1000);
+        }
+        if (typeof createdAt === "object" && createdAt.toDate) {
+            return createdAt.toDate();
+        }
+
+        if (typeof createdAt === "string") {
+            // DD-MM-YYYY format
+            if (/^\d{2}-\d{2}-\d{4}$/.test(createdAt)) {
+                const [d, m, y] = createdAt.split("-").map(Number);
+                return new Date(y, m - 1, d);
+            }
+            // ISO string or any other string format
+            const parsed = new Date(createdAt);
+            if (!isNaN(parsed.getTime())) return parsed;
+        }
+
+        return null;
+    };
+
+    const snap = await approvalsCollection.orderBy("projectNo", "asc").get();
+
+    let totalAdvancedPaid = 0;
+    let totalExpensePaid  = 0;
+    let totalFees         = 0;
+    let totalFinalBalance = 0;
+    const projects        = [];
+
+    for (const doc of snap.docs) {
+        const data = doc.data();
+
+        const created = parseCreatedAt(data.createdAt);
+
+        // Skip if date can't be parsed or is outside range
+        if (!created || created < start || created > end) continue;
+
+        const calcs = await getApprovalCalculations(
+            doc.id,
+            data.financialDetails?.totalFees
+        );
+
+        const projectFees = Number(data.financialDetails?.totalFees) || 0;
+
+        totalAdvancedPaid += calcs.advancedPaid;
+        totalExpensePaid  += calcs.expensePaid;
+        totalFees         += projectFees;
+        totalFinalBalance += calcs.finalBalance;
+
+        projects.push({
+            id:           doc.id,
+            projectNo:    data.projectNo,
+            clientName:   data.clientName || "",
+            projectType:  data.projectType || "",
+            createdAt:    data.createdAt,
+            status:       data.statusTracking?.currentStatus || "ongoing",
+            totalFees:    projectFees,
+            advancedPaid: calcs.advancedPaid,
+            expensePaid:  calcs.expensePaid,
+            amountLeft:   calcs.amountLeft,
+            finalBalance: calcs.finalBalance,
+        });
+    }
+
+    return {
+        dateRange: { startDate, endDate },
+        summary: {
+            totalProjects:    projects.length,
+            totalFees,
+            totalAdvancedPaid,
+            totalExpensePaid,
+            totalAmountLeft:  totalAdvancedPaid - totalExpensePaid,
+            totalFinalBalance,
+        },
+        projects,
+    };
 };

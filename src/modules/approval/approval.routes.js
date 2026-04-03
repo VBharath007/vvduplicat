@@ -6,11 +6,14 @@ const { authorize } = require("../../middleware/role.middleware");
 
 const isAdmin = [verifyToken, authorize(["admin"])];
 
-// --- Project Type Options (Put SPECIFIC routes BEFORE general ones) --- //
+// --- Project Type Options --- //
 router.post("/project-type", isAdmin, approvalController.addProjectType);
 router.get("/project-type", approvalController.getProjectTypes);
 router.put("/project-type/:id/confirm", isAdmin, approvalController.confirmProjectType);
 router.delete("/project-type/:id", isAdmin, approvalController.deleteProjectType);
+
+// --- Date Range Summary (MUST be before /:id routes) --- //
+router.get("/summary/date-range", isAdmin, approvalController.getSummaryByDateRange);
 
 // --- Approval Management --- //
 router.post("/", isAdmin, approvalController.createApproval);

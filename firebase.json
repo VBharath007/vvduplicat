@@ -1,0 +1,11 @@
+{
+  "projects": {
+    "default": "vvduplicate2"
+  },
+  "firestore": {
+    "database": "(default)",
+    "location": "asia-south2",
+    "rules": "y",
+    "indexes": "y"
+  }
+}
