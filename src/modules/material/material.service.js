@@ -1,381 +1,484 @@
-const db = require("../../config/firebase").db;
-const admin = require("firebase-admin");
+const { db } = require("../../config/firebase");
 
-// ─────────────────────────────────────────────────────────────────────────
-// MATERIAL MASTER
-// ─────────────────────────────────────────────────────────────────────────
+const materialsCollection = db.collection("materials");
+const materialReceivedCollection = db.collection("materialReceived");
+const materialUsedCollection = db.collection("materialUsed");
+const stockCollection = db.collection("stock");
+const materialRequiredCollection = db.collection("materialRequired");
+const materialPlanCollection = db.collection("materialPlan");
+const siteExpensesCollection = db.collection("siteExpenses");
+const dayjs = require("dayjs");
 
-async function createMaterial(data) {
-  const { materialId, materialName, materialUnit, materialType } = data;
-  if (!materialId || !materialName) throw new Error("Missing required fields");
-  const docRef = await db.collection("materials").doc(materialId).set({
-    materialId, materialName, materialUnit, materialType, createdAt: admin.firestore.FieldValue.serverTimestamp(),
-  });
-  return { id: materialId, ...data };
+const getFormattedDate = (date) =>
+    date ? dayjs(date).format("DD-MM-YYYY") : dayjs().format("DD-MM-YYYY");
+
+// ─── Default Materials ────────────────────────────────────────────────────────
+
+const DEFAULT_MATERIALS = [
+    "MSAND", "PSAND", "RIVERSAND", "BRICKS", "FLYESH BRICKS",
+    "RENACON BLOCKS", "CEMENT", "STEEL-8MM", "STEEL-6MM",
+    "STEEL-10MM", "STEEL-12MM", "STEEL-16MM", "STEEL-20MM",
+    "AGGREGATE-20MM", "AGGREGATE-40MM", "BABY CHIPS", "GRAVEL"
+];
+
+const initializeMaterials = async () => {
+    try {
+        const snap = await materialsCollection.limit(1).get();
+        if (snap.empty) {
+            const batch = db.batch();
+            DEFAULT_MATERIALS.forEach(name => {
+                // ✅ FIX 4: doc ID = materialId → consistent lookup everywhere
+                const materialId = name.replace(/\s+/g, '_').toUpperCase();
+                const docRef = materialsCollection.doc(materialId);
+                batch.set(docRef, {
+                    materialId,
+                    materialName: name.toUpperCase(),
+                    isDefault: true,
+                    createdAt: new Date().toISOString()
+                });
+            });
+            await batch.commit();
+            console.log("Default materials initialized.");
+        }
+    } catch (error) {
+        console.error("Failed to initialize materials:", error);
+    }
+};
+
+initializeMaterials();
+
+// ─── Internal Helpers ─────────────────────────────────────────────────────────
+
+async function _createMaterialExpense(receiptId, receivedData, paidAmount) {
+    // ✅ FIX 3: always store ISO date → Flutter formatDate() works correctly
+    const isoNow = new Date().toISOString();
+
+    const expenseData = {
+        projectNo: receivedData.projectNo,
+        amount: paidAmount,
+        particular: `Material Purchase: ${receivedData.materialName}`,
+        remark: receivedData.dealerName ? `Material Purchase: ${receivedData.materialName} (Dealer: ${receivedData.dealerName})` : `Material Purchase: ${receivedData.materialName}`,
+        type: "materialPayment",
+        materialId: receivedData.materialId,
+        receiptId,
+        date: isoNow,
+        createdAt: isoNow,
+    };
+
+    const snap = await siteExpensesCollection
+        .where("projectNo", "==", receivedData.projectNo).get();
+    let totalPrevious = 0;
+    snap.forEach(doc => { totalPrevious += Number(doc.data().amount) || 0; });
+    expenseData.pastExpense = totalPrevious;
+
+    await siteExpensesCollection.add(expenseData);
 }
 
-async function getMaterials() {
-  const snapshot = await db.collection("materials").get();
-  return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// MATERIAL RECEIVED - WITH BANK PAYMENT (CORRECTED: MINUS from balance)
-// ─────────────────────────────────────────────────────────────────────────
-
-async function recordMaterialReceived(data) {
-  const {
-    projectNo, materialId, materialName, quantity, rate, paidAmount = 0,
-    dealerName, date, paymentMethod = "CASH", bankId, bankName,
-  } = data;
-
-  if (!projectNo || !materialId || !materialName || quantity <= 0) {
-    throw new Error("Missing or invalid required fields");
-  }
-
-  const receiptId = `RECEIPT-${Date.now()}`;
-  const receivedDoc = {
-    receiptId, projectNo, materialId, materialName, quantity,
-    rate: rate || 0, totalAmount: (quantity * (rate || 0)),
-    paidAmount: paidAmount || 0, dealerName: dealerName || "",
-    date: date || new Date().toISOString().split('T')[0],
-    paymentMethod: paymentMethod || "CASH",
-    bankId: bankId || null, bankName: bankName || null,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-  };
-
-  const batch = db.batch();
-
-  // 1. Save material received record
-  batch.set(db.collection("materialReceived").doc(receiptId), receivedDoc);
-
-  // 2. Handle BANK payment - DEDUCT from balance
-  if (paymentMethod === "BANK" && bankId && paidAmount > 0) {
-    await _createMaterialBankTransaction(batch, bankId, bankName, paidAmount, receiptId, materialName, "DEBIT");
-  }
-
-  // 3. All materials go to siteExpenses (existing logic)
-  await _createMaterialExpense(batch, projectNo, receiptId, dealerName, paidAmount, materialName);
-
-  await batch.commit();
-
-  return receivedDoc;
-}
-
-async function updateReceiptPayment(receiptId, updateData) {
-  const { paidAmount, paymentMethod, bankId, bankName } = updateData;
-  const receiptRef = db.collection("materialReceived").doc(receiptId);
-  const oldReceipt = await receiptRef.get();
-
-  if (!oldReceipt.exists) throw new Error("Receipt not found");
-
-  const oldData = oldReceipt.data();
-  const oldPaymentMethod = oldData.paymentMethod || "CASH";
-  const oldBankId = oldData.bankId;
-  const oldPaidAmount = oldData.paidAmount || 0;
-  const newPaidAmount = paidAmount || 0;
-  const newPaymentMethod = paymentMethod || oldPaymentMethod;
-  const newBankId = bankId || oldBankId;
-
-  const batch = db.batch();
-
-  // Update receipt
-  batch.update(receiptRef, {
-    paidAmount: newPaidAmount, paymentMethod: newPaymentMethod,
-    bankId: newBankId, bankName: bankName || null,
-    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-  });
-
-  // Handle payment method changes
-  if (oldPaymentMethod === "CASH" && newPaymentMethod === "CASH") {
-    // CASH → CASH: update expense amount
-    await _updateExpenseAmount(batch, receiptId, oldPaidAmount, newPaidAmount);
-  } else if (oldPaymentMethod === "CASH" && newPaymentMethod === "BANK") {
-    // CASH → BANK: delete expense, create bank transaction (DEBIT)
-    await _deleteExpense(batch, receiptId);
-    await _createMaterialBankTransaction(
-      batch, newBankId, bankName, newPaidAmount, receiptId, 
-      oldData.materialName, "DEBIT"
-    );
-  } else if (oldPaymentMethod === "BANK" && newPaymentMethod === "CASH") {
-    // BANK → CASH: revert bank balance (CREDIT), create expense
-    await _createMaterialBankTransaction(
-      batch, oldBankId, oldData.bankName, oldPaidAmount, receiptId, 
-      oldData.materialName, "CREDIT"
-    );
-    await _createMaterialExpense(batch, oldData.projectNo, receiptId, oldData.dealerName, newPaidAmount, oldData.materialName);
-  } else if (oldPaymentMethod === "BANK" && newPaymentMethod === "BANK") {
-    // BANK → BANK: adjust both banks
-    if (oldBankId === newBankId) {
-      // Same bank: adjust transaction amount
-      const difference = newPaidAmount - oldPaidAmount;
-      if (difference !== 0) {
-        const txnType = difference > 0 ? "DEBIT" : "CREDIT";
-        await _createMaterialBankTransaction(
-          batch, newBankId, bankName, Math.abs(difference), receiptId, 
-          oldData.materialName, txnType
-        );
-      }
+async function _updateMaterialExpense(receiptId, newPaidAmount) {
+    const snap = await siteExpensesCollection
+        .where("receiptId", "==", receiptId)
+        .where("type", "==", "materialPayment")
+        .get();
+    if (snap.empty) return;
+    const expenseRef = snap.docs[0].ref;
+    if (newPaidAmount <= 0) {
+        await expenseRef.delete();
     } else {
-      // Different banks: revert old, create on new
-      await _createMaterialBankTransaction(
-        batch, oldBankId, oldData.bankName, oldPaidAmount, receiptId, 
-        oldData.materialName, "CREDIT"
-      );
-      await _createMaterialBankTransaction(
-        batch, newBankId, bankName, newPaidAmount, receiptId, 
-        oldData.materialName, "DEBIT"
-      );
+        await expenseRef.update({ amount: newPaidAmount, updatedAt: new Date().toISOString() });
     }
-  }
-
-  await batch.commit();
-
-  return { ...oldData, paidAmount: newPaidAmount, paymentMethod: newPaymentMethod, bankId: newBankId };
 }
 
-async function updateMaterialReceived(receiptId, updateData) {
-  const receiptRef = db.collection("materialReceived").doc(receiptId);
-  const oldReceipt = await receiptRef.get();
+async function _deleteMaterialExpense(receiptId) {
+    const snap = await siteExpensesCollection
+        .where("receiptId", "==", receiptId)
+        .where("type", "==", "materialPayment")
+        .get();
+    await Promise.all(snap.docs.map(doc => doc.ref.delete()));
+}
 
-  if (!oldReceipt.exists) throw new Error("Receipt not found");
+// ─── Material Master ──────────────────────────────────────────────────────────
 
-  const oldData = oldReceipt.data();
-  const batch = db.batch();
+exports.createMaterial = async (materialData) => {
+    if (!materialData.materialId) throw new Error("materialId is required");
+    const docRef = materialsCollection.doc(materialData.materialId);
+    const doc = await docRef.get();
+    if (doc.exists) throw new Error("Material with this materialId already exists");
+    await docRef.set(materialData);
+    return materialData;
+};
 
-  // Update receipt
-  batch.update(receiptRef, { ...updateData, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+exports.getMaterials = async () => {
+    const snapshot = await materialsCollection.orderBy("materialName", "asc").get();
+    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+};
 
-  // Handle BANK payments: adjust balance if amount changed
-  if (oldData.paymentMethod === "BANK" && oldData.bankId && updateData.paidAmount) {
-    const difference = updateData.paidAmount - oldData.paidAmount;
-    if (difference !== 0) {
-      const txnType = difference > 0 ? "DEBIT" : "CREDIT";
-      await _createMaterialBankTransaction(
-        batch, oldData.bankId, oldData.bankName, Math.abs(difference), receiptId,
-        oldData.materialName, txnType
-      );
+// ─── Material Received ────────────────────────────────────────────────────────
+
+exports.recordMaterialReceived = async (receivedData) => {
+    const normalizedId = receivedData.materialId ? receivedData.materialId.trim().toUpperCase() : null;
+    const normalizedName = receivedData.materialName ? receivedData.materialName.trim().toUpperCase() : null;
+
+    if (!receivedData.projectNo || !normalizedId) throw new Error("projectNo and materialId are required");
+    if (!normalizedName) throw new Error("materialName is required");
+
+    // Ensure material exists in master list
+    const matRef = materialsCollection.doc(normalizedId);
+    const matDoc = await matRef.get();
+    if (!matDoc.exists) {
+        await matRef.set({
+            materialId: normalizedId,
+            materialName: normalizedName,
+            isDefault: false,
+            createdAt: new Date().toISOString()
+        });
     }
-  }
 
-  // Update expense if CASH
-  if (oldData.paymentMethod === "CASH" && updateData.paidAmount) {
-    await _updateExpenseAmount(batch, receiptId, oldData.paidAmount, updateData.paidAmount);
-  }
+    // Stock consistency check
+    const stockId = `${receivedData.projectNo}_${normalizedId}`;
+    const stockRef = stockCollection.doc(stockId);
+    const stockDoc = await stockRef.get();
 
-  await batch.commit();
+    if (stockDoc.exists) {
+        const existingName = stockDoc.data().materialName;
+        if (existingName.toUpperCase() !== normalizedName) {
+            throw new Error(`Material ID '${normalizedId}' already registered as '${existingName}'.`);
+        }
+    }
 
-  return { ...oldData, ...updateData };
-}
+    const receiptDate = getFormattedDate(receivedData.date);
+    const quantity = Number(receivedData.quantity) || 0;
+    const rate = Number(receivedData.rate) || 0;
+    const paidAmount = Number(receivedData.paidAmount) || 0;
+    const totalAmount = quantity * rate;
 
-async function deleteMaterialReceived(receiptId) {
-  const receiptRef = db.collection("materialReceived").doc(receiptId);
-  const receipt = await receiptRef.get();
+    const finalData = {
+        ...receivedData,
+        materialId: normalizedId,
+        materialName: normalizedName,
+        date: receiptDate,
+        quantity,
+        rate,
+        totalAmount,
+        paidAmount,
+        dueAmount: Math.max(0, totalAmount - paidAmount),
+        createdAt: new Date().toISOString()
+    };
 
-  if (!receipt.exists) throw new Error("Receipt not found");
+    const docRef = await materialReceivedCollection.add(finalData);
+    const receiptId = docRef.id;
 
-  const data = receipt.data();
-  const batch = db.batch();
+    // Stock update
+    if (stockDoc.exists) {
+        const s = stockDoc.data();
+        await stockRef.update({
+            receivedQuantity: (Number(s.receivedQuantity) || 0) + quantity,
+            stock: (Number(s.stock) || 0) + quantity,
+            updatedAt: receiptDate
+        });
+    } else {
+        await stockRef.set({
+            projectNo: finalData.projectNo,
+            materialId: normalizedId,
+            materialName: normalizedName,
+            receivedQuantity: quantity,
+            usedQuantity: 0,
+            stock: quantity,
+            createdAt: receiptDate
+        });
+    }
 
-  // Delete receipt
-  batch.delete(receiptRef);
+    if (paidAmount > 0) {
+        await _createMaterialExpense(receiptId, finalData, paidAmount);
+    }
 
-  // Handle BANK payments: revert balance (CREDIT)
-  if (data.paymentMethod === "BANK" && data.bankId && data.paidAmount > 0) {
-    await _createMaterialBankTransaction(
-      batch, data.bankId, data.bankName, data.paidAmount, receiptId,
-      data.materialName, "CREDIT"
-    );
-  }
+    return { receiptId, ...finalData };
+};
 
-  // Delete expense
-  await _deleteExpense(batch, receiptId);
-
-  await batch.commit();
-
-  return { success: true, deletedReceiptId: receiptId };
-}
-
-async function getMaterialReceived(projectNo) {
-  if (!projectNo) {
-    const snapshot = await db.collection("materialReceived").get();
+exports.getMaterialReceived = async (projectNo) => {
+    let query = materialReceivedCollection;
+    if (projectNo) query = query.where("projectNo", "==", projectNo);
+    const snapshot = await query.get();
     return snapshot.docs.map(doc => ({ receiptId: doc.id, ...doc.data() }));
-  }
-  const snapshot = await db.collection("materialReceived").where("projectNo", "==", projectNo).get();
-  return snapshot.docs.map(doc => ({ receiptId: doc.id, ...doc.data() }));
-}
+};
 
-async function getMaterialReceivedByMaterialId(materialId) {
-  const snapshot = await db.collection("materialReceived").where("materialId", "==", materialId).get();
-  if (snapshot.empty) throw new Error("No records found for this material");
-  return snapshot.docs.map(doc => ({ receiptId: doc.id, ...doc.data() }));
-}
+exports.getMaterialReceivedByMaterialId = async (materialId) => {
+    const snapshot = await materialReceivedCollection
+        .where("materialId", "==", materialId).get();
+    if (snapshot.empty) throw new Error(`No received records found for material ID '${materialId}'`);
+    return snapshot.docs.map(doc => ({ receiptId: doc.id, ...doc.data() }));
+};
 
-// ─────────────────────────────────────────────────────────────────────────
-// BANK TRANSACTION HELPER (CORRECTED: DEBIT = MINUS, CREDIT = PLUS)
-// ─────────────────────────────────────────────────────────────────────────
+exports.updateReceiptPayment = async (receiptId, paymentData) => {
+    const docRef = materialReceivedCollection.doc(receiptId);
+    const doc = await docRef.get();
+    if (!doc.exists) throw new Error("Receipt not found");
 
-async function _createMaterialBankTransaction(batch, bankId, bankName, amount, receiptId, materialName, transactionType) {
-  if (!bankId || amount <= 0 || !["DEBIT", "CREDIT"].includes(transactionType)) {
-    throw new Error("Invalid transaction parameters");
-  }
+    const newPaidAmount = Number(paymentData.paidAmount) || 0;
+    const oldData = doc.data();
+    const totalAmount = Number(oldData.totalAmount) || 0;
 
-  const bankRef = db.collection("banks").doc(bankId);
-  const bankDoc = await bankRef.get();
+    await docRef.update({
+        paidAmount: newPaidAmount,
+        dueAmount: Math.max(0, totalAmount - newPaidAmount),
+    });
 
-  if (!bankDoc.exists) throw new Error("Bank account not found");
+    const existingExpSnap = await siteExpensesCollection
+        .where("receiptId", "==", receiptId)
+        .where("type", "==", "materialPayment")
+        .get();
 
-  const bankData = bankDoc.data();
-  const balanceBefore = bankData.currentBalance || 0;
+    if (newPaidAmount > 0) {
+        if (existingExpSnap.empty) {
+            await _createMaterialExpense(receiptId, oldData, newPaidAmount);
+        } else {
+            await existingExpSnap.docs[0].ref.update({
+                amount: newPaidAmount,
+                updatedAt: new Date().toISOString(),
+            });
+        }
+    } else {
+        await Promise.all(existingExpSnap.docs.map(d => d.ref.delete()));
+    }
 
-  // CORRECTED: DEBIT = MINUS from balance, CREDIT = PLUS to balance
-  const balanceAfter = transactionType === "DEBIT" ? (balanceBefore - amount) : (balanceBefore + amount);
+    const updatedDoc = await docRef.get();
+    return { receiptId: updatedDoc.id, ...updatedDoc.data() };
+};
 
-  // Update bank balance
-  batch.update(bankRef, { currentBalance: balanceAfter, updatedAt: admin.firestore.FieldValue.serverTimestamp() });
+exports.updateMaterialReceived = async (receiptId, updateData) => {
+    const docRef = materialReceivedCollection.doc(receiptId);
+    const doc = await docRef.get();
+    if (!doc.exists) throw new Error("Receipt not found");
 
-  // Create transaction record
-  const txnRef = db.collection("banks").doc(bankId).collection("transactions").doc(`TXN-${Date.now()}`);
-  batch.set(txnRef, {
-    type: transactionType,
-    amount, projectNo: "", remark: `Material: ${materialName}`,
-    date: new Date().toISOString().split('T')[0],
-    balanceBefore, balanceAfter,
-    transactionType: "MATERIAL_PAYMENT",
-    relatedReceiptId: receiptId, materialId: "", materialName,
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-  });
-}
+    const oldData = doc.data();
 
-// ─────────────────────────────────────────────────────────────────────────
-// SITE EXPENSES HELPERS (EXISTING LOGIC - NO CHANGES)
-// ─────────────────────────────────────────────────────────────────────────
+    // PUT = SET, not ADD
+    const oldQty = Number(oldData.quantity) || 0;
+    const newQty = updateData.quantity !== undefined ? Number(updateData.quantity) : oldQty;
 
-async function _createMaterialExpense(batch, projectNo, receiptId, dealerName, amount, materialName) {
-  if (!projectNo || amount <= 0) return;
+    const newRate = updateData.rate !== undefined
+        ? Number(updateData.rate)
+        : (Number(oldData.rate) || 0);
 
-  const expenseId = `EXP-${Date.now()}`;
-  const expenseRef = db.collection("siteExpenses").doc(expenseId);
+    const newTotalAmount = newQty * newRate;
+    const newPaidAmount = updateData.paidAmount !== undefined
+        ? Number(updateData.paidAmount)
+        : (Number(oldData.paidAmount) || 0);
 
-  batch.set(expenseRef, {
-    expenseId, projectNo, relatedReceiptId: receiptId,
-    type: "MATERIAL", dealerName: dealerName || "",
-    amount, amountReceived: amount,
-    remark: `Material Purchase: ${materialName}`,
-    date: new Date().toISOString().split('T')[0],
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-  });
-}
+    const updatedRecord = {
+        ...updateData,
+        quantity: newQty,
+        rate: newRate,
+        totalAmount: newTotalAmount,
+        paidAmount: newPaidAmount,
+        dueAmount: Math.max(0, newTotalAmount - newPaidAmount),
+        updatedAt: new Date().toISOString(),
+    };
 
-async function _updateExpenseAmount(batch, receiptId, oldAmount, newAmount) {
-  const snapshot = await db.collection("siteExpenses").where("relatedReceiptId", "==", receiptId).limit(1).get();
-  if (!snapshot.empty) {
-    const expenseRef = snapshot.docs[0].ref;
-    batch.update(expenseRef, { amount: newAmount, amountReceived: newAmount });
-  }
-}
+    // Stock diff-based update
+    const qtyDiff = newQty - oldQty;
+    if (qtyDiff !== 0) {
+        const stockId = `${oldData.projectNo}_${oldData.materialId}`;
+        const stockRef = stockCollection.doc(stockId);
+        const stockDoc = await stockRef.get();
+        if (stockDoc.exists) {
+            const s = stockDoc.data();
+            await stockRef.update({
+                receivedQuantity: Math.max(0, (Number(s.receivedQuantity) || 0) + qtyDiff),
+                stock: Math.max(0, (Number(s.stock) || 0) + qtyDiff),
+                updatedAt: new Date().toISOString(),
+            });
+        }
+    }
 
-async function _deleteExpense(batch, receiptId) {
-  const snapshot = await db.collection("siteExpenses").where("relatedReceiptId", "==", receiptId).get();
-  snapshot.docs.forEach(doc => batch.delete(doc.ref));
-}
+    // Strip undefined before Firestore update
+    const cleanRecord = Object.fromEntries(
+        Object.entries(updatedRecord).filter(([_, v]) => v !== undefined)
+    );
+    await docRef.update(cleanRecord);
 
-// ─────────────────────────────────────────────────────────────────────────
-// MATERIAL USED (NO CHANGES)
-// ─────────────────────────────────────────────────────────────────────────
+    if (newPaidAmount !== (Number(oldData.paidAmount) || 0)) {
+        await _updateMaterialExpense(receiptId, newPaidAmount);
+    }
 
-async function recordMaterialUsed(data) {
-  const { projectNo, materialId, materialName, quantityUsed, date } = data;
-  if (!projectNo || !materialId || quantityUsed <= 0) throw new Error("Missing required fields");
+    const updatedDoc = await docRef.get();
+    return { receiptId: updatedDoc.id, ...updatedDoc.data() };
+};
 
-  const usageId = `USAGE-${Date.now()}`;
-  await db.collection("materialUsed").doc(usageId).set({
-    usageId, projectNo, materialId, materialName, quantityUsed,
-    date: date || new Date().toISOString().split('T')[0],
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-  });
+exports.deleteMaterialReceived = async (receiptId) => {
+    const docRef = materialReceivedCollection.doc(receiptId);
+    const doc = await docRef.get();
+    if (!doc.exists) throw new Error("Receipt not found");
 
-  return { usageId, ...data };
-}
-
-async function updateMaterialUsed(usageId, updateData) {
-  await db.collection("materialUsed").doc(usageId).update({
-    ...updateData, updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-  });
-  const doc = await db.collection("materialUsed").doc(usageId).get();
-  return { usageId, ...doc.data() };
-}
-
-async function deleteMaterialUsed(usageId) {
-  await db.collection("materialUsed").doc(usageId).delete();
-  return { success: true, deletedUsageId: usageId };
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// MATERIAL STOCK
-// ─────────────────────────────────────────────────────────────────────────
-
-async function getMaterialStock(projectNo) {
-  const receivedSnapshot = await db.collection("materialReceived").where("projectNo", "==", projectNo).get();
-  const usedSnapshot = await db.collection("materialUsed").where("projectNo", "==", projectNo).get();
-
-  const stock = {};
-
-  receivedSnapshot.docs.forEach(doc => {
     const data = doc.data();
-    const name = data.materialName || data.name;
-    if (!stock[name]) stock[name] = { received: 0, used: 0, unit: data.unit || "" };
-    stock[name].received += data.quantity || 0;
-  });
+    const quantity = Number(data.quantity) || 0;
+    const stockId = `${data.projectNo}_${data.materialId}`;
+    const stockRef = stockCollection.doc(stockId);
+    const stockDoc = await stockRef.get();
 
-  usedSnapshot.docs.forEach(doc => {
+    if (stockDoc.exists && quantity > 0) {
+        const s = stockDoc.data();
+        await stockRef.update({
+            receivedQuantity: Math.max(0, (s.receivedQuantity || 0) - quantity),
+            stock: Math.max(0, (s.stock || 0) - quantity),
+        });
+    }
+
+    await _deleteMaterialExpense(receiptId);
+    await docRef.delete();
+    return { message: "Material receipt deleted and stock/expense restored", receiptId };
+};
+
+// ─── Material Used ────────────────────────────────────────────────────────────
+
+// ✅ FIX 1+2: Only ONE definition, receiptDate replaced with usedDate
+exports.recordMaterialUsed = async (usedData) => {
+    const normalizedId = usedData.materialId ? usedData.materialId.trim().toUpperCase() : null;
+
+    if (!usedData.projectNo || !normalizedId)
+        throw new Error("projectNo and materialId are required");
+
+    const qtyUsed = Number(usedData.quantityUsed) || 0;
+    const stockId = `${usedData.projectNo}_${normalizedId}`;
+    const stockRef = stockCollection.doc(stockId);
+    const stockDoc = await stockRef.get();
+
+    if (!stockDoc.exists)
+        throw new Error(`Material '${normalizedId}' not found in stock. Please receive it first.`);
+
+    const currentStock = stockDoc.data();
+    const availableStock = Number(currentStock.stock) || 0;
+
+    if (qtyUsed > availableStock) {
+        throw new Error(
+            `Stock is ${availableStock}, you cannot use ${qtyUsed}. ` +
+            `Please add material received first.`
+        );
+    }
+
+    // ✅ usedDate defined locally — no dependency on outer scope
+    const usedDate = getFormattedDate(usedData.date);
+
+    const finalUsedData = {
+        ...usedData,
+        materialId: normalizedId,
+        materialName: currentStock.materialName,
+        quantityUsed: qtyUsed,
+        createdAt: usedDate,
+    };
+
+    const docRef = await materialUsedCollection.add(finalUsedData);
+
+    await stockRef.update({
+        usedQuantity: (Number(currentStock.usedQuantity) || 0) + qtyUsed,
+        stock: availableStock - qtyUsed,
+        updatedAt: usedDate,
+    });
+
+    return { usageId: docRef.id, ...finalUsedData };
+};
+
+exports.deleteMaterialUsed = async (usageId) => {
+    const docRef = materialUsedCollection.doc(usageId);
+    const doc = await docRef.get();
+    if (!doc.exists) throw new Error("Material used record not found");
+
     const data = doc.data();
-    const name = data.materialName || data.name;
-    if (!stock[name]) stock[name] = { received: 0, used: 0, unit: "" };
-    stock[name].used += data.quantityUsed || 0;
-  });
+    const qtyUsed = Number(data.quantityUsed) || 0;
+    const stockId = `${data.projectNo}_${data.materialId}`;
+    const stockRef = stockCollection.doc(stockId);
+    const stockDoc = await stockRef.get();
 
-  return Object.entries(stock).map(([name, data]) => ({
-    materialName: name, received: data.received, used: data.used,
-    balance: data.received - data.used, unit: data.unit,
-  }));
-}
+    if (stockDoc.exists && qtyUsed > 0) {
+        const s = stockDoc.data();
+        await stockRef.update({
+            usedQuantity: Math.max(0, (Number(s.usedQuantity) || 0) - qtyUsed),
+            stock: (Number(s.stock) || 0) + qtyUsed,
+        });
+    }
 
-// ─────────────────────────────────────────────────────────────────────────
-// MATERIAL REQUIRED (NO CHANGES)
-// ─────────────────────────────────────────────────────────────────────────
+    await docRef.delete();
+    return { message: "Material used record deleted and stock restored", usageId };
+};
 
-async function addMaterialRequired(data) {
-  const { projectNo, materialId, materialName, requiredQuantity, date } = data;
-  if (!projectNo || !materialName || requiredQuantity <= 0) throw new Error("Missing required fields");
+// ─── Material Stock ───────────────────────────────────────────────────────────
 
-  const requiredId = `REQ-${Date.now()}`;
-  await db.collection("materialRequired").doc(requiredId).set({
-    requiredId, projectNo, materialId, materialName, requiredQuantity,
-    date: date || new Date().toISOString().split('T')[0],
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-  });
+exports.getMaterialStock = async (projectNo) => {
+    let snap;
+    if (projectNo) {
+        snap = await stockCollection.where("projectNo", "==", projectNo).get();
+    } else {
+        snap = await stockCollection.get();
+    }
+    return snap.docs.map(doc => doc.data());
+};
 
-  return { requiredId, ...data };
-}
+// ─── Material Required ────────────────────────────────────────────────────────
 
-async function getMaterialRequired(projectNo) {
-  if (!projectNo) {
-    const snapshot = await db.collection("materialRequired").get();
-    return snapshot.docs.map(doc => ({ requiredId: doc.id, ...doc.data() }));
-  }
-  const snapshot = await db.collection("materialRequired").where("projectNo", "==", projectNo).get();
-  return snapshot.docs.map(doc => ({ requiredId: doc.id, ...doc.data() }));
-}
+exports.addMaterialRequired = async (data) => {
+    if (!data.projectNo || !data.materialId) throw new Error("projectNo and materialId are required");
+    if (!data.materialName) throw new Error("materialName is required");
 
-async function getAllMaterialRequired() {
-  const snapshot = await db.collection("materialRequired").get();
-  return snapshot.docs.map(doc => ({ requiredId: doc.id, ...doc.data() }));
-}
+    const qty = Number(data.requiredQuantity) || 0;
+    if (qty <= 0) throw new Error("requiredQuantity must be a positive number");
 
-module.exports = {
-  createMaterial, getMaterials, recordMaterialReceived, getMaterialReceived,
-  getMaterialReceivedByMaterialId, updateReceiptPayment, updateMaterialReceived,
-  deleteMaterialReceived, recordMaterialUsed, updateMaterialUsed, deleteMaterialUsed,
-  getMaterialStock, addMaterialRequired, getMaterialRequired, getAllMaterialRequired,
+    const existingSnap = await materialRequiredCollection
+        .where("projectNo", "==", data.projectNo)
+        .where("materialId", "==", data.materialId)
+        .get();
+
+    let requiredDocId, newRequiredQuantity;
+
+    if (!existingSnap.empty) {
+        const existingDoc = existingSnap.docs[0];
+        const currentQty = Number(existingDoc.data().requiredQuantity) || 0;
+        newRequiredQuantity = currentQty + qty;
+        await existingDoc.ref.update({
+            requiredQuantity: newRequiredQuantity,
+            updatedAt: new Date().toISOString(),
+        });
+        requiredDocId = existingDoc.id;
+    } else {
+        newRequiredQuantity = qty;
+        data.createdAt = new Date().toISOString();
+        data.requiredQuantity = qty;
+        const docRef = await materialRequiredCollection.add(data);
+        requiredDocId = docRef.id;
+    }
+
+    return {
+        id: requiredDocId,
+        projectNo: data.projectNo,
+        materialId: data.materialId,
+        materialName: data.materialName,
+        requiredQuantity: newRequiredQuantity,
+    };
+};
+
+exports.getAllMaterialRequired = async () => {
+    const snap = await materialRequiredCollection.get();
+    return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+};
+
+exports.getMaterialRequired = async (projectNo) => {
+    const [planSnap, stockSnap] = await Promise.all([
+        materialPlanCollection.where("projectNo", "==", projectNo).get(),
+        stockCollection.where("projectNo", "==", projectNo).get(),
+    ]);
+
+    const stocks = stockSnap.docs.map(doc => doc.data());
+
+    return planSnap.docs.map(doc => {
+        const plan = doc.data();
+        const stockItem = stocks.find(s => s.materialId === plan.materialId);
+        const stock = stockItem ? stockItem.stock : 0;
+        const plannedQty = Number(plan.plannedQuantity) || 0;
+        const required = plannedQty - stock;
+        return {
+            materialId: plan.materialId,
+            materialName: plan.materialName,
+            plannedQuantity: plannedQty,
+            stock,
+            materialRequired: required > 0 ? required : 0,
+        };
+    });
 };

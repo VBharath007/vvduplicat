@@ -1,32 +1,36 @@
 const express = require("express");
-const materialController = require("../controllers/material.controller");
-
 const router = express.Router();
+const materialController = require("./material.controller");
+const { verifyToken } = require("../../middleware/auth.middleware");
+const { authorize } = require("../../middleware/role.middleware");
 
-// Material Master
-router.post("/", materialController.createMaterial);
-router.get("/", materialController.getMaterials);
+const isAdmin = [verifyToken, authorize(["admin"])];
 
-// Material Received (with BANK payment support)
-router.post("/received", materialController.recordMaterialReceived);
-router.get("/received", materialController.getMaterialReceived);
-router.get("/received/materialId/:materialId", materialController.getMaterialReceivedByMaterialId);
-router.put("/received/:receiptId/payment", materialController.updateReceiptPayment);
-router.put("/received/:receiptId", materialController.updateMaterialReceived);
-router.delete("/received/:receiptId", materialController.deleteMaterialReceived);
+// --- Material Master --- //
+// router.post("/", isAdmin, materialController.createMaterial);
+// router.get("/", isAdmin, materialController.getMaterials);
 
-// Material Used
-router.post("/used", materialController.recordMaterialUsed);
-router.get("/used/:projectNo", materialController.getMaterialUsed);
-router.put("/used/:usageId", materialController.updateMaterialUsed);
-router.delete("/used/:usageId", materialController.deleteMaterialUsed);
+// --- Material Received --- //
+router.post("/received", isAdmin, materialController.recordMaterialReceived);
+router.get("/received", isAdmin, materialController.getMaterialReceived);
+router.get("/received/:materialId", isAdmin, materialController.getMaterialReceivedByMaterialId);
+router.put("/received/:receiptId", isAdmin, materialController.updateMaterialReceived);
+router.put("/received/:receiptId/payment", isAdmin, materialController.updateReceiptPayment);
 
-// Material Stock
-router.get("/stock/:projectNo", materialController.getMaterialStock);
+// --- Material Used --- //
+router.post("/used", isAdmin, materialController.recordMaterialUsed);
+router.get("/used", isAdmin, materialController.getAllMaterialUsed);
+router.get("/used/:projectNo", isAdmin, materialController.getAllMaterialUsed);
+router.put("/used/:usageId", isAdmin, materialController.updateMaterialUsed);
+router.delete("/used/:usageId", isAdmin, materialController.deleteMaterialUsed);
+// --- Material Stock --- //
+router.get("/stock/:projectNo", isAdmin, materialController.getMaterialStock);
 
-// Material Required
-router.post("/required", materialController.addMaterialRequired);
-router.get("/required/:projectNo", materialController.getMaterialRequired);
-router.get("/required/all", materialController.getAllMaterialRequired);
+// --- Material Required --- //
+router.post("/required", isAdmin, materialController.addMaterialRequired);
+
+router.get("/required", isAdmin, materialController.getAllMaterialRequired);
+router.get("/required/:projectNo", isAdmin, materialController.getMaterialRequired);
 
 module.exports = router;
+
