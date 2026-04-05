@@ -11,7 +11,12 @@ const isAdmin = [verifyToken, authorize(["admin"])];
 // Bank account management
 router.get("/", isAdmin, bankController.getAllBanks);
 router.post("/", isAdmin, bankController.createBank);
+router.post("/create-for-advance", isAdmin, bankController.createTemporaryBankForAdvance);
 router.put("/:bankId", isAdmin, bankController.updateBank);
+
+// Bank balance operations
+router.post("/:bankId/increment-balance", isAdmin, bankController.incrementBankBalance);
+router.post("/:bankId/decrement-balance", isAdmin, bankController.decrementBankBalance);
 
 // Add advance with payment mode
 router.post("/:projectNo/advance-payment", isAdmin, bankController.addAdvanceWithPaymentMode);
