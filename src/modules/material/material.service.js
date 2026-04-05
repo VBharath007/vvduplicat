@@ -7,6 +7,7 @@ const stockCollection = db.collection("stock");
 const materialRequiredCollection = db.collection("materialRequired");
 const materialPlanCollection = db.collection("materialPlan");
 const siteExpensesCollection = db.collection("siteExpenses");
+const banksCollection = db.collection("banks");
 const dayjs = require("dayjs");
 
 const getFormattedDate = (date) =>
@@ -27,7 +28,6 @@ const initializeMaterials = async () => {
         if (snap.empty) {
             const batch = db.batch();
             DEFAULT_MATERIALS.forEach(name => {
-                // ✅ FIX 4: doc ID = materialId → consistent lookup everywhere
                 const materialId = name.replace(/\s+/g, '_').toUpperCase();
                 const docRef = materialsCollection.doc(materialId);
                 batch.set(docRef, {
@@ -49,8 +49,10 @@ initializeMaterials();
 
 // ─── Internal Helpers ─────────────────────────────────────────────────────────
 
+/**
+ * Create a material expense (CASH payment)
+ */
 async function _createMaterialExpense(receiptId, receivedData, paidAmount) {
-    // ✅ FIX 3: always store ISO date → Flutter formatDate() works correctly
     const isoNow = new Date().toISOString();
 
     const expenseData = {
@@ -63,6 +65,7 @@ async function _createMaterialExpense(receiptId, receivedData, paidAmount) {
         receiptId,
         date: isoNow,
         createdAt: isoNow,
+        paymentMethod: "CASH", // Explicitly mark as CASH
     };
 
     const snap = await siteExpensesCollection
@@ -74,10 +77,67 @@ async function _createMaterialExpense(receiptId, receivedData, paidAmount) {
     await siteExpensesCollection.add(expenseData);
 }
 
+/**
+ * Create a material advance (BANK payment)
+ * Updates bank balance and creates transaction record
+ */
+async function _createMaterialAdvance(receiptId, receivedData, paidAmount, paymentMethod, bankId, bankName) {
+    if (paymentMethod !== "BANK" || !bankId) return;
+
+    const isoNow = new Date().toISOString();
+
+    // Update bank balance
+    const bankDoc = await banksCollection.doc(bankId).get();
+    if (!bankDoc.exists) {
+        throw new Error(`Bank account with ID ${bankId} not found`);
+    }
+
+    const bankData = bankDoc.data();
+    const currentBalance = Number(bankData.currentBalance || 0);
+    const newBalance = currentBalance + paidAmount;
+
+    await banksCollection.doc(bankId).update({
+        currentBalance: newBalance,
+        closingBalance: newBalance,
+        updatedAt: isoNow
+    });
+
+    // Create transaction in subcollection: banks/{bankId}/transactions
+    const transactionData = {
+        type: "CREDIT",
+        amount: paidAmount,
+        projectNo: receivedData.projectNo,
+        remark: `Material Purchase: ${receivedData.materialName}${receivedData.dealerName ? ` (Dealer: ${receivedData.dealerName})` : ''}`,
+        date: receivedData.date || new Date().toISOString().split("T")[0],
+        balanceBefore: currentBalance,
+        balanceAfter: newBalance,
+        transactionType: "MATERIAL_PAYMENT",
+        createdAt: isoNow,
+        relatedReceiptId: receiptId,
+        materialId: receivedData.materialId,
+        materialName: receivedData.materialName
+    };
+
+    const transactionRef = await banksCollection
+        .doc(bankId)
+        .collection("transactions")
+        .add(transactionData);
+
+    // Store bank transaction reference in receipt
+    return {
+        bankTransactionId: transactionRef.id,
+        bankName: bankName || bankData.accountName || "Unknown Bank"
+    };
+}
+
+/**
+ * Update material expense (CASH payment)
+ */
 async function _updateMaterialExpense(receiptId, newPaidAmount) {
     const snap = await siteExpensesCollection
         .where("receiptId", "==", receiptId)
         .where("type", "==", "materialPayment")
+        .where("paymentMethod", "==", "CASH")
         .get();
     if (snap.empty) return;
     const expenseRef = snap.docs[0].ref;
@@ -88,12 +148,159 @@ async function _updateMaterialExpense(receiptId, newPaidAmount) {
     }
 }
 
+/**
+ * Update material advance (BANK payment)
+ */
+async function _updateMaterialAdvance(receiptId, newPaidAmount, oldPaidAmount, bankId, oldBankId) {
+    const isoNow = new Date().toISOString();
+
+    // If bank unchanged, just adjust balance
+    if (bankId === oldBankId && bankId) {
+        const amountDifference = newPaidAmount - oldPaidAmount;
+        const bankDoc = await banksCollection.doc(bankId).get();
+        if (bankDoc.exists) {
+            const bankData = bankDoc.data();
+            const currentBalance = Number(bankData.currentBalance || 0);
+            const newBalance = currentBalance + amountDifference;
+
+            await banksCollection.doc(bankId).update({
+                currentBalance: newBalance,
+                closingBalance: newBalance,
+                updatedAt: isoNow
+            });
+
+            // Create adjustment transaction
+            if (amountDifference !== 0) {
+                await banksCollection
+                    .doc(bankId)
+                    .collection("transactions")
+                    .add({
+                        type: amountDifference > 0 ? "CREDIT" : "DEBIT",
+                        amount: Math.abs(amountDifference),
+                        remark: `Material payment adjustment`,
+                        date: new Date().toISOString().split("T")[0],
+                        balanceBefore: currentBalance - amountDifference,
+                        balanceAfter: newBalance,
+                        transactionType: "MATERIAL_ADJUSTMENT",
+                        createdAt: isoNow,
+                        relatedReceiptId: receiptId
+                    });
+            }
+        }
+        return;
+    }
+
+    // If bank changed: revert old bank, add to new bank
+    if (oldBankId && oldBankId !== bankId) {
+        const oldBankDoc = await banksCollection.doc(oldBankId).get();
+        if (oldBankDoc.exists) {
+            const oldBankData = oldBankDoc.data();
+            const oldBalance = Number(oldBankData.currentBalance || 0);
+            const revertedBalance = oldBalance - oldPaidAmount;
+
+            await banksCollection.doc(oldBankId).update({
+                currentBalance: revertedBalance,
+                closingBalance: revertedBalance,
+                updatedAt: isoNow
+            });
+
+            // Create debit transaction in old bank
+            await banksCollection
+                .doc(oldBankId)
+                .collection("transactions")
+                .add({
+                    type: "DEBIT",
+                    amount: oldPaidAmount,
+                    remark: `Material payment reversed`,
+                    date: new Date().toISOString().split("T")[0],
+                    balanceBefore: oldBalance,
+                    balanceAfter: revertedBalance,
+                    transactionType: "MATERIAL_REVERSED",
+                    createdAt: isoNow,
+                    relatedReceiptId: receiptId
+                });
+        }
+    }
+
+    // Add to new bank
+    if (newPaidAmount > 0 && bankId) {
+        const newBankDoc = await banksCollection.doc(bankId).get();
+        if (newBankDoc.exists) {
+            const newBankData = newBankDoc.data();
+            const newBalance = Number(newBankData.currentBalance || 0) + newPaidAmount;
+
+            await banksCollection.doc(bankId).update({
+                currentBalance: newBalance,
+                closingBalance: newBalance,
+                updatedAt: isoNow
+            });
+
+            // Create credit transaction in new bank
+            await banksCollection
+                .doc(bankId)
+                .collection("transactions")
+                .add({
+                    type: "CREDIT",
+                    amount: newPaidAmount,
+                    remark: `Material payment from bank change`,
+                    date: new Date().toISOString().split("T")[0],
+                    balanceBefore: Number(newBankData.currentBalance || 0),
+                    balanceAfter: newBalance,
+                    transactionType: "MATERIAL_PAYMENT",
+                    createdAt: isoNow,
+                    relatedReceiptId: receiptId
+                });
+        }
+    }
+}
+
+/**
+ * Delete material expense (CASH payment)
+ */
 async function _deleteMaterialExpense(receiptId) {
     const snap = await siteExpensesCollection
         .where("receiptId", "==", receiptId)
         .where("type", "==", "materialPayment")
+        .where("paymentMethod", "==", "CASH")
         .get();
     await Promise.all(snap.docs.map(doc => doc.ref.delete()));
+}
+
+/**
+ * Delete material advance (BANK payment)
+ */
+async function _deleteMaterialAdvance(receiptId, paidAmount, bankId) {
+    if (!bankId) return;
+
+    const isoNow = new Date().toISOString();
+    const bankDoc = await banksCollection.doc(bankId).get();
+    if (bankDoc.exists) {
+        const bankData = bankDoc.data();
+        const currentBalance = Number(bankData.currentBalance || 0);
+        const newBalance = Math.max(0, currentBalance - paidAmount);
+
+        await banksCollection.doc(bankId).update({
+            currentBalance: newBalance,
+            closingBalance: newBalance,
+            updatedAt: isoNow
+        });
+
+        // Create debit transaction
+        await banksCollection
+            .doc(bankId)
+            .collection("transactions")
+            .add({
+                type: "DEBIT",
+                amount: paidAmount,
+                remark: `Material payment deleted`,
+                date: new Date().toISOString().split("T")[0],
+                balanceBefore: currentBalance,
+                balanceAfter: newBalance,
+                transactionType: "MATERIAL_DELETED",
+                createdAt: isoNow,
+                relatedReceiptId: receiptId
+            });
+    }
 }
 
 // ─── Material Master ──────────────────────────────────────────────────────────
@@ -114,12 +321,23 @@ exports.getMaterials = async () => {
 
 // ─── Material Received ────────────────────────────────────────────────────────
 
+/**
+ * Record material received with CASH or BANK payment
+ * Frontend passes:
+ * {
+ *   projectNo, materialId, materialName, quantity, rate, paidAmount, dealerName,
+ *   date, paymentMethod ("CASH" | "BANK"), bankId?, bankName?
+ * }
+ */
 exports.recordMaterialReceived = async (receivedData) => {
     const normalizedId = receivedData.materialId ? receivedData.materialId.trim().toUpperCase() : null;
     const normalizedName = receivedData.materialName ? receivedData.materialName.trim().toUpperCase() : null;
 
     if (!receivedData.projectNo || !normalizedId) throw new Error("projectNo and materialId are required");
     if (!normalizedName) throw new Error("materialName is required");
+    if (!receivedData.paymentMethod || !["CASH", "BANK"].includes(receivedData.paymentMethod)) {
+        throw new Error("paymentMethod must be 'CASH' or 'BANK'");
+    }
 
     // Ensure material exists in master list
     const matRef = materialsCollection.doc(normalizedId);
@@ -161,11 +379,41 @@ exports.recordMaterialReceived = async (receivedData) => {
         totalAmount,
         paidAmount,
         dueAmount: Math.max(0, totalAmount - paidAmount),
+        paymentMethod: receivedData.paymentMethod,
         createdAt: new Date().toISOString()
     };
 
+    // Handle BANK payment
+    if (receivedData.paymentMethod === "BANK") {
+        if (!receivedData.bankId) {
+            throw new Error("bankId is required for BANK payment method");
+        }
+        if (paidAmount > 0) {
+            const advanceData = await _createMaterialAdvance(
+                null, // receiptId will be set after doc is created
+                finalData,
+                paidAmount,
+                receivedData.paymentMethod,
+                receivedData.bankId,
+                receivedData.bankName
+            );
+            finalData.bankId = receivedData.bankId;
+            finalData.bankName = advanceData.bankName;
+            finalData.bankTransactionId = advanceData.bankTransactionId;
+        }
+    }
+
     const docRef = await materialReceivedCollection.add(finalData);
     const receiptId = docRef.id;
+
+    // Update bankTransactionId if BANK payment (now that we have receiptId)
+    if (receivedData.paymentMethod === "BANK" && finalData.bankTransactionId) {
+        await banksCollection
+            .doc(receivedData.bankId)
+            .collection("transactions")
+            .doc(finalData.bankTransactionId)
+            .update({ relatedReceiptId: receiptId });
+    }
 
     // Stock update
     if (stockDoc.exists) {
@@ -187,7 +435,8 @@ exports.recordMaterialReceived = async (receivedData) => {
         });
     }
 
-    if (paidAmount > 0) {
+    // Handle CASH payment (legacy expense record)
+    if (receivedData.paymentMethod === "CASH" && paidAmount > 0) {
         await _createMaterialExpense(receiptId, finalData, paidAmount);
     }
 
@@ -208,6 +457,10 @@ exports.getMaterialReceivedByMaterialId = async (materialId) => {
     return snapshot.docs.map(doc => ({ receiptId: doc.id, ...doc.data() }));
 };
 
+/**
+ * Update receipt payment (handles both CASH and BANK)
+ * Frontend passes: { paidAmount, paymentMethod?, bankId?, bankName? }
+ */
 exports.updateReceiptPayment = async (receiptId, paymentData) => {
     const docRef = materialReceivedCollection.doc(receiptId);
     const doc = await docRef.get();
@@ -215,29 +468,61 @@ exports.updateReceiptPayment = async (receiptId, paymentData) => {
 
     const newPaidAmount = Number(paymentData.paidAmount) || 0;
     const oldData = doc.data();
+    const oldPaymentMethod = oldData.paymentMethod || "CASH";
+    const newPaymentMethod = paymentData.paymentMethod || oldPaymentMethod;
     const totalAmount = Number(oldData.totalAmount) || 0;
+    const oldPaidAmount = Number(oldData.paidAmount) || 0;
+    const oldBankId = oldData.bankId;
+    const newBankId = paymentData.bankId;
 
     await docRef.update({
         paidAmount: newPaidAmount,
         dueAmount: Math.max(0, totalAmount - newPaidAmount),
+        paymentMethod: newPaymentMethod,
+        bankId: newBankId,
+        bankName: paymentData.bankName
     });
 
-    const existingExpSnap = await siteExpensesCollection
-        .where("receiptId", "==", receiptId)
-        .where("type", "==", "materialPayment")
-        .get();
-
-    if (newPaidAmount > 0) {
-        if (existingExpSnap.empty) {
-            await _createMaterialExpense(receiptId, oldData, newPaidAmount);
+    // Handle payment method change or amount change
+    if (oldPaymentMethod === "CASH") {
+        if (newPaymentMethod === "BANK") {
+            // CASH to BANK: delete expense, create advance
+            await _deleteMaterialExpense(receiptId);
+            if (newPaidAmount > 0 && newBankId) {
+                const advanceData = await _createMaterialAdvance(
+                    receiptId,
+                    oldData,
+                    newPaidAmount,
+                    newPaymentMethod,
+                    newBankId,
+                    paymentData.bankName
+                );
+                await docRef.update({
+                    bankTransactionId: advanceData.bankTransactionId,
+                    bankName: advanceData.bankName
+                });
+            }
         } else {
-            await existingExpSnap.docs[0].ref.update({
-                amount: newPaidAmount,
-                updatedAt: new Date().toISOString(),
-            });
+            // CASH to CASH: update expense
+            if (newPaidAmount !== oldPaidAmount) {
+                await _updateMaterialExpense(receiptId, newPaidAmount);
+            }
         }
-    } else {
-        await Promise.all(existingExpSnap.docs.map(d => d.ref.delete()));
+    } else if (oldPaymentMethod === "BANK") {
+        if (newPaymentMethod === "CASH") {
+            // BANK to CASH: revert advance, create expense
+            if (oldPaidAmount > 0 && oldBankId) {
+                await _deleteMaterialAdvance(receiptId, oldPaidAmount, oldBankId);
+            }
+            if (newPaidAmount > 0) {
+                await _createMaterialExpense(receiptId, oldData, newPaidAmount);
+            }
+        } else {
+            // BANK to BANK: update advance
+            if (newPaidAmount !== oldPaidAmount || newBankId !== oldBankId) {
+                await _updateMaterialAdvance(receiptId, newPaidAmount, oldPaidAmount, newBankId, oldBankId);
+            }
+        }
     }
 
     const updatedDoc = await docRef.get();
@@ -250,8 +535,6 @@ exports.updateMaterialReceived = async (receiptId, updateData) => {
     if (!doc.exists) throw new Error("Receipt not found");
 
     const oldData = doc.data();
-
-    // PUT = SET, not ADD
     const oldQty = Number(oldData.quantity) || 0;
     const newQty = updateData.quantity !== undefined ? Number(updateData.quantity) : oldQty;
 
@@ -260,9 +543,13 @@ exports.updateMaterialReceived = async (receiptId, updateData) => {
         : (Number(oldData.rate) || 0);
 
     const newTotalAmount = newQty * newRate;
+    const oldPaidAmount = Number(oldData.paidAmount) || 0;
     const newPaidAmount = updateData.paidAmount !== undefined
         ? Number(updateData.paidAmount)
-        : (Number(oldData.paidAmount) || 0);
+        : oldPaidAmount;
+
+    const newPaymentMethod = updateData.paymentMethod || oldData.paymentMethod || "CASH";
+    const newBankId = updateData.bankId || oldData.bankId;
 
     const updatedRecord = {
         ...updateData,
@@ -271,6 +558,8 @@ exports.updateMaterialReceived = async (receiptId, updateData) => {
         totalAmount: newTotalAmount,
         paidAmount: newPaidAmount,
         dueAmount: Math.max(0, newTotalAmount - newPaidAmount),
+        paymentMethod: newPaymentMethod,
+        bankId: newBankId,
         updatedAt: new Date().toISOString(),
     };
 
@@ -290,15 +579,42 @@ exports.updateMaterialReceived = async (receiptId, updateData) => {
         }
     }
 
-    // Strip undefined before Firestore update
+    // Handle payment amount change
+    if (newPaidAmount !== oldPaidAmount) {
+        const oldPaymentMethod = oldData.paymentMethod || "CASH";
+
+        if (oldPaymentMethod === "CASH" && newPaymentMethod === "CASH") {
+            await _updateMaterialExpense(receiptId, newPaidAmount);
+        } else if (oldPaymentMethod === "BANK" && newPaymentMethod === "BANK") {
+            await _updateMaterialAdvance(receiptId, newPaidAmount, oldPaidAmount, newBankId, oldData.bankId);
+        } else if (oldPaymentMethod === "CASH" && newPaymentMethod === "BANK") {
+            await _deleteMaterialExpense(receiptId);
+            if (newPaidAmount > 0) {
+                const advanceData = await _createMaterialAdvance(
+                    receiptId,
+                    oldData,
+                    newPaidAmount,
+                    newPaymentMethod,
+                    newBankId,
+                    updateData.bankName
+                );
+                updatedRecord.bankTransactionId = advanceData.bankTransactionId;
+                updatedRecord.bankName = advanceData.bankName;
+            }
+        } else if (oldPaymentMethod === "BANK" && newPaymentMethod === "CASH") {
+            if (oldPaidAmount > 0 && oldData.bankId) {
+                await _deleteMaterialAdvance(receiptId, oldPaidAmount, oldData.bankId);
+            }
+            if (newPaidAmount > 0) {
+                await _createMaterialExpense(receiptId, oldData, newPaidAmount);
+            }
+        }
+    }
+
     const cleanRecord = Object.fromEntries(
         Object.entries(updatedRecord).filter(([_, v]) => v !== undefined)
     );
     await docRef.update(cleanRecord);
-
-    if (newPaidAmount !== (Number(oldData.paidAmount) || 0)) {
-        await _updateMaterialExpense(receiptId, newPaidAmount);
-    }
 
     const updatedDoc = await docRef.get();
     return { receiptId: updatedDoc.id, ...updatedDoc.data() };
@@ -311,6 +627,11 @@ exports.deleteMaterialReceived = async (receiptId) => {
 
     const data = doc.data();
     const quantity = Number(data.quantity) || 0;
+    const paidAmount = Number(data.paidAmount) || 0;
+    const paymentMethod = data.paymentMethod || "CASH";
+    const bankId = data.bankId;
+
+    // Update stock
     const stockId = `${data.projectNo}_${data.materialId}`;
     const stockRef = stockCollection.doc(stockId);
     const stockDoc = await stockRef.get();
@@ -323,14 +644,19 @@ exports.deleteMaterialReceived = async (receiptId) => {
         });
     }
 
-    await _deleteMaterialExpense(receiptId);
+    // Revert payments based on method
+    if (paymentMethod === "CASH" && paidAmount > 0) {
+        await _deleteMaterialExpense(receiptId);
+    } else if (paymentMethod === "BANK" && paidAmount > 0 && bankId) {
+        await _deleteMaterialAdvance(receiptId, paidAmount, bankId);
+    }
+
     await docRef.delete();
     return { message: "Material receipt deleted and stock/expense restored", receiptId };
 };
 
 // ─── Material Used ────────────────────────────────────────────────────────────
 
-// ✅ FIX 1+2: Only ONE definition, receiptDate replaced with usedDate
 exports.recordMaterialUsed = async (usedData) => {
     const normalizedId = usedData.materialId ? usedData.materialId.trim().toUpperCase() : null;
 
@@ -355,7 +681,6 @@ exports.recordMaterialUsed = async (usedData) => {
         );
     }
 
-    // ✅ usedDate defined locally — no dependency on outer scope
     const usedDate = getFormattedDate(usedData.date);
 
     const finalUsedData = {

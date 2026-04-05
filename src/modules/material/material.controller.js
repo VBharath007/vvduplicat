@@ -20,10 +20,21 @@ exports.getMaterials = async (req, res, next) => {
 };
 
 // --- Material Received --- //
+/**
+ * POST /api/materials/received
+ * Body: {
+ *   projectNo, materialId, materialName, quantity, rate, paidAmount, dealerName,
+ *   date, paymentMethod ("CASH" | "BANK"), bankId?, bankName?
+ * }
+ */
 exports.recordMaterialReceived = async (req, res, next) => {
     try {
         const result = await materialService.recordMaterialReceived(req.body);
-        res.status(201).json({ success: true, data: result });
+        res.status(201).json({ 
+            success: true, 
+            data: result,
+            message: `Material received${result.paymentMethod === 'BANK' ? ' and bank balance updated with transaction record' : ''}`
+        });
     } catch (error) {
         res.status(400).json({ success: false, message: error.message });
     }
@@ -48,11 +59,19 @@ exports.getMaterialReceivedByMaterialId = async (req, res, next) => {
     }
 };
 
-
+/**
+ * PUT /api/materials/received/:receiptId/payment
+ * Update payment for receipt (CASH or BANK)
+ * Body: { paidAmount, paymentMethod?, bankId?, bankName? }
+ */
 exports.updateReceiptPayment = async (req, res, next) => {
     try {
         const result = await materialService.updateReceiptPayment(req.params.receiptId, req.body);
-        res.status(200).json({ success: true, data: result });
+        res.status(200).json({ 
+            success: true, 
+            data: result,
+            message: "Payment updated successfully and bank transactions adjusted if applicable"
+        });
     } catch (error) {
         res.status(400).json({ success: false, message: error.message });
     }
@@ -108,7 +127,6 @@ exports.deleteMaterialUsed = async (req, res, next) => {
     }
 };
 
-
 // --- Material Stock --- //
 exports.getMaterialStock = async (req, res, next) => {
     try {
@@ -120,7 +138,6 @@ exports.getMaterialStock = async (req, res, next) => {
     }
 };
 
-
 exports.addMaterialRequired = async (req, res, next) => {
     try {
         const result = await materialService.addMaterialRequired(req.body);
@@ -129,8 +146,6 @@ exports.addMaterialRequired = async (req, res, next) => {
         res.status(500).json({ error: error.message });
     }
 };
-
-
 
 exports.getMaterialRequired = async (req, res, next) => {
     try {
