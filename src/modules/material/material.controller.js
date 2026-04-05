@@ -26,6 +26,7 @@ exports.getMaterials = async (req, res, next) => {
  *   projectNo, materialId, materialName, quantity, rate, paidAmount, dealerName,
  *   date, paymentMethod ("CASH" | "BANK"), bankId?, bankName?
  * }
+ * BANK PAYMENT: paidAmount is DEDUCTED from bank balance
  */
 exports.recordMaterialReceived = async (req, res, next) => {
     try {
@@ -33,7 +34,9 @@ exports.recordMaterialReceived = async (req, res, next) => {
         res.status(201).json({ 
             success: true, 
             data: result,
-            message: `Material received${result.paymentMethod === 'BANK' ? ' and bank balance updated with transaction record' : ''}`
+            message: result.paymentMethod === 'BANK' 
+                ? `Material received. Bank balance reduced by ₹${result.paidAmount}` 
+                : `Material received and expense recorded`
         });
     } catch (error) {
         res.status(400).json({ success: false, message: error.message });
@@ -63,6 +66,7 @@ exports.getMaterialReceivedByMaterialId = async (req, res, next) => {
  * PUT /api/materials/received/:receiptId/payment
  * Update payment for receipt (CASH or BANK)
  * Body: { paidAmount, paymentMethod?, bankId?, bankName? }
+ * BANK PAYMENT: paidAmount is DEDUCTED from bank balance
  */
 exports.updateReceiptPayment = async (req, res, next) => {
     try {
@@ -70,7 +74,9 @@ exports.updateReceiptPayment = async (req, res, next) => {
         res.status(200).json({ 
             success: true, 
             data: result,
-            message: "Payment updated successfully and bank transactions adjusted if applicable"
+            message: result.paymentMethod === 'BANK'
+                ? `Payment updated. Bank balance adjusted by ₹${req.body.paidAmount}`
+                : `Payment updated`
         });
     } catch (error) {
         res.status(400).json({ success: false, message: error.message });
@@ -81,6 +87,15 @@ exports.updateMaterialReceived = async (req, res, next) => {
     try {
         const result = await materialService.updateMaterialReceived(req.params.receiptId, req.body);
         res.status(200).json({ success: true, data: result });
+    } catch (error) {
+        res.status(400).json({ success: false, message: error.message });
+    }
+};
+
+exports.deleteMaterialReceived = async (req, res, next) => {
+    try {
+        const result = await materialService.deleteMaterialReceived(req.params.receiptId);
+        res.status(200).json({ success: true, message: "Material receipt deleted and transactions reverted", data: result });
     } catch (error) {
         res.status(400).json({ success: false, message: error.message });
     }
@@ -104,6 +119,16 @@ exports.getAllMaterialUsed = async (req, res, next) => {
         const result = await query.get();
         const data = result.docs.map(doc => ({ usageId: doc.id, ...doc.data() }));
         res.status(200).json({ success: true, data });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+exports.getMaterialUsed = async (req, res, next) => {
+    try {
+        const { projectNo } = req.params;
+        const result = await materialService.getMaterialUsedByProject(projectNo);
+        res.status(200).json({ success: true, data: result });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
@@ -138,10 +163,11 @@ exports.getMaterialStock = async (req, res, next) => {
     }
 };
 
+// --- Material Required --- //
 exports.addMaterialRequired = async (req, res, next) => {
     try {
         const result = await materialService.addMaterialRequired(req.body);
-        res.status(201).json({ message: "Material Required Added", id: result.id, data: result });
+        res.status(201).json({ message: "Material Required Added", id: result.requiredId, data: result });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
