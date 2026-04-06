@@ -7,6 +7,8 @@ const stockCollection = db.collection("stock");
 const materialRequiredCollection = db.collection("materialRequired");
 const materialPlanCollection = db.collection("materialPlan");
 const siteExpensesCollection = db.collection("siteExpenses");
+const materialAdvancesCollection = db.collection("materialAdvances");
+const banksCollection = db.collection("banks");
 const dayjs = require("dayjs");
 
 const getFormattedDate = (date) =>
@@ -211,33 +213,26 @@ exports.getMaterialReceivedByMaterialId = async (materialId) => {
 exports.updateReceiptPayment = async (receiptId, paymentData) => {
     const docRef = materialReceivedCollection.doc(receiptId);
     const doc = await docRef.get();
-    if (!doc.exists) throw new Error("Receipt not found");
+    if (!doc.exists) throw new Error("Material received record not found");
 
+    const existingData = doc.data();
+    const totalAmount = Number(existingData.totalAmount) || 0;
+    const oldPaidAmount = Number(existingData.paidAmount) || 0;
     const newPaidAmount = Number(paymentData.paidAmount) || 0;
-    const oldData = doc.data();
-    const totalAmount = Number(oldData.totalAmount) || 0;
 
+    if (newPaidAmount > totalAmount) {
+        throw new Error(`Paid amount (${newPaidAmount}) cannot exceed total amount (${totalAmount})`);
+    }
+
+    const dueAmount = Math.max(0, totalAmount - newPaidAmount);
     await docRef.update({
         paidAmount: newPaidAmount,
-        dueAmount: Math.max(0, totalAmount - newPaidAmount),
+        dueAmount,
+        updatedAt: new Date().toISOString(),
     });
 
-    const existingExpSnap = await siteExpensesCollection
-        .where("receiptId", "==", receiptId)
-        .where("type", "==", "materialPayment")
-        .get();
-
-    if (newPaidAmount > 0) {
-        if (existingExpSnap.empty) {
-            await _createMaterialExpense(receiptId, oldData, newPaidAmount);
-        } else {
-            await existingExpSnap.docs[0].ref.update({
-                amount: newPaidAmount,
-                updatedAt: new Date().toISOString(),
-            });
-        }
-    } else {
-        await Promise.all(existingExpSnap.docs.map(d => d.ref.delete()));
+    if (newPaidAmount !== oldPaidAmount) {
+        await _updateMaterialExpense(receiptId, newPaidAmount);
     }
 
     const updatedDoc = await docRef.get();
@@ -247,22 +242,22 @@ exports.updateReceiptPayment = async (receiptId, paymentData) => {
 exports.updateMaterialReceived = async (receiptId, updateData) => {
     const docRef = materialReceivedCollection.doc(receiptId);
     const doc = await docRef.get();
-    if (!doc.exists) throw new Error("Receipt not found");
+    if (!doc.exists) throw new Error("Material received record not found");
 
     const oldData = doc.data();
-
-    // PUT = SET, not ADD
     const oldQty = Number(oldData.quantity) || 0;
-    const newQty = updateData.quantity !== undefined ? Number(updateData.quantity) : oldQty;
+    const oldRate = Number(oldData.rate) || 0;
+    const oldTotalAmount = oldQty * oldRate;
+    const oldPaidAmount = Number(oldData.paidAmount) || 0;
 
-    const newRate = updateData.rate !== undefined
-        ? Number(updateData.rate)
-        : (Number(oldData.rate) || 0);
-
+    const newQty = Number(updateData.quantity) !== undefined ? Number(updateData.quantity) : oldQty;
+    const newRate = Number(updateData.rate) !== undefined ? Number(updateData.rate) : oldRate;
     const newTotalAmount = newQty * newRate;
-    const newPaidAmount = updateData.paidAmount !== undefined
-        ? Number(updateData.paidAmount)
-        : (Number(oldData.paidAmount) || 0);
+    const newPaidAmount = Number(updateData.paidAmount) !== undefined ? Number(updateData.paidAmount) : oldPaidAmount;
+
+    if (newPaidAmount > newTotalAmount) {
+        throw new Error(`Paid amount (${newPaidAmount}) cannot exceed total amount (${newTotalAmount})`);
+    }
 
     const updatedRecord = {
         ...updateData,
@@ -296,7 +291,7 @@ exports.updateMaterialReceived = async (receiptId, updateData) => {
     );
     await docRef.update(cleanRecord);
 
-    if (newPaidAmount !== (Number(oldData.paidAmount) || 0)) {
+    if (newPaidAmount !== oldPaidAmount) {
         await _updateMaterialExpense(receiptId, newPaidAmount);
     }
 
@@ -400,6 +395,50 @@ exports.deleteMaterialUsed = async (usageId) => {
     return { message: "Material used record deleted and stock restored", usageId };
 };
 
+exports.updateMaterialUsed = async (usageId, updateData) => {
+    const docRef = materialUsedCollection.doc(usageId);
+    const doc = await docRef.get();
+    if (!doc.exists) throw new Error("Material used record not found");
+
+    const existingData = doc.data();
+    const oldQtyUsed = Number(existingData.quantityUsed) || 0;
+    const newQtyUsed = Number(updateData.quantityUsed) || oldQtyUsed;
+
+    const stockId = `${existingData.projectNo}_${existingData.materialId}`;
+    const stockRef = stockCollection.doc(stockId);
+    const stockDoc = await stockRef.get();
+
+    if (!stockDoc.exists) {
+        throw new Error("Stock record not found");
+    }
+
+    const currentStock = stockDoc.data();
+    const availableStock = Number(currentStock.stock) || 0;
+    const qtyDiff = newQtyUsed - oldQtyUsed;
+
+    if (qtyDiff > availableStock) {
+        throw new Error(
+            `Stock is ${availableStock}, you cannot use additional ${qtyDiff}.`
+        );
+    }
+
+    await docRef.update({
+        quantityUsed: newQtyUsed,
+        updatedAt: new Date().toISOString(),
+    });
+
+    if (qtyDiff !== 0) {
+        await stockRef.update({
+            usedQuantity: Math.max(0, (Number(currentStock.usedQuantity) || 0) + qtyDiff),
+            stock: Math.max(0, availableStock - qtyDiff),
+            updatedAt: new Date().toISOString(),
+        });
+    }
+
+    const updatedDoc = await docRef.get();
+    return { usageId: updatedDoc.id, ...updatedDoc.data() };
+};
+
 // ─── Material Stock ───────────────────────────────────────────────────────────
 
 exports.getMaterialStock = async (projectNo) => {
@@ -482,3 +521,427 @@ exports.getMaterialRequired = async (projectNo) => {
         };
     });
 };
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ──── MATERIAL ADVANCE PAYMENT (WITH BANK INTEGRATION) ────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Create a material advance payment
+ * If paymentMethod === "CASH": Only save to materialAdvances collection
+ * If paymentMethod === "BANK": 
+ *   - DEDUCT from bank balance (opposite of advance which adds)
+ *   - Create transaction in banks/{bankId}/transactions subcollection
+ *   - Save to materialAdvances collection
+ */
+exports.createMaterialAdvance = async (advanceData) => {
+    if (!advanceData.projectNo) {
+        throw new Error("projectNo is required");
+    }
+    
+    if (!advanceData.amountAdvance) {
+        throw new Error("amountAdvance is required");
+    }
+
+    if (!advanceData.paymentMethod) {
+        throw new Error("paymentMethod is required (CASH or BANK)");
+    }
+
+    // Validate paymentMethod
+    const validMethods = ["CASH", "BANK"];
+    if (!validMethods.includes(advanceData.paymentMethod)) {
+        throw new Error(`paymentMethod must be one of: ${validMethods.join(", ")}`);
+    }
+
+    // Default values
+    advanceData.createdAt = new Date().toISOString();
+    advanceData.amountAdvance = Number(advanceData.amountAdvance) || 0;
+
+    // If BANK payment, validate bankId is provided
+    if (advanceData.paymentMethod === "BANK" && !advanceData.bankId) {
+        throw new Error("bankId is required for BANK payment method");
+    }
+
+    // Recalculate pastAdvance from DB (sum of all previous material advances for this project)
+    const snapshot = await materialAdvancesCollection
+        .where("projectNo", "==", advanceData.projectNo)
+        .get();
+    let totalPrevious = 0;
+    snapshot.forEach(doc => {
+        totalPrevious += (Number(doc.data().amountAdvance) || 0);
+    });
+    advanceData.pastAdvance = totalPrevious;
+
+    // If BANK payment: DEDUCT from bank balance AND create transaction
+    if (advanceData.paymentMethod === "BANK") {
+        const bankDoc = await banksCollection.doc(advanceData.bankId).get();
+        if (!bankDoc.exists) {
+            throw new Error(`Bank account with ID ${advanceData.bankId} not found`);
+        }
+
+        const bankData = bankDoc.data();
+        const currentBalance = Number(bankData.currentBalance || 0);
+        const newBalance = currentBalance - advanceData.amountAdvance; // DEDUCT for material advance
+
+        if (newBalance < 0) {
+            throw new Error(`Insufficient bank balance. Current: ${currentBalance}, Required: ${advanceData.amountAdvance}`);
+        }
+
+        // 1. Update bank balance (DEDUCT)
+        await banksCollection.doc(advanceData.bankId).update({
+            currentBalance: newBalance,
+            closingBalance: newBalance,
+            updatedAt: new Date().toISOString()
+        });
+
+        // 2. Create transaction in subcollection: banks/{bankId}/transactions
+        const transactionData = {
+            type: "DEBIT", // DEBIT for advance paid out
+            amount: advanceData.amountAdvance,
+            projectNo: advanceData.projectNo,
+            remark: advanceData.remark || "Material advance payment",
+            date: advanceData.date || new Date().toISOString().split("T")[0],
+            balanceBefore: currentBalance,
+            balanceAfter: newBalance,
+            transactionType: "MATERIAL_ADVANCE_PAID",
+            createdAt: new Date().toISOString(),
+            relatedMaterialAdvanceId: null // Will be set after advance is created
+        };
+
+        const transactionRef = await banksCollection
+            .doc(advanceData.bankId)
+            .collection("transactions")
+            .add(transactionData);
+
+        // Store transaction ID and bank name in advance record
+        advanceData.bankName = bankData.accountName || "Unknown Bank";
+        advanceData.bankTransactionId = transactionRef.id;
+    }
+
+    // 3. Save advance record to materialAdvances collection
+    const docRef = await materialAdvancesCollection.add(advanceData);
+
+    // 4. If BANK payment, update transaction with advance ID reference
+    if (advanceData.paymentMethod === "BANK" && advanceData.bankTransactionId) {
+        await banksCollection
+            .doc(advanceData.bankId)
+            .collection("transactions")
+            .doc(advanceData.bankTransactionId)
+            .update({
+                relatedMaterialAdvanceId: docRef.id
+            });
+    }
+
+    return { materialAdvanceId: docRef.id, ...advanceData };
+};
+
+/**
+ * Get all material advances for a project or globally
+ */
+exports.getMaterialAdvances = async (projectNo) => {
+    let query = materialAdvancesCollection;
+    if (projectNo) {
+        query = query.where("projectNo", "==", projectNo);
+    }
+    const snapshot = await query.orderBy("createdAt", "desc").get();
+    const advances = [];
+    let totalProjectAmount = 0;
+
+    snapshot.forEach((doc) => {
+        const data = doc.data();
+        const amountAdvance = Number(data.amountAdvance) || 0;
+        const pastAdvance = Number(data.pastAdvance) || 0;
+
+        // Per-row overall total (cumulative)
+        const rowTotal = amountAdvance + pastAdvance;
+
+        totalProjectAmount += amountAdvance; // Sum only current to avoid double counting
+
+        advances.push({
+            materialAdvanceId: doc.id,
+            ...data,
+            rowTotal: rowTotal
+        });
+    });
+
+    return {
+        advances,
+        totalAdvance: totalProjectAmount
+    };
+};
+
+/**
+ * Update a material advance record
+ * If amount or paymentMethod changes, update bank balance and transactions accordingly
+ */
+exports.updateMaterialAdvance = async (id, updateData) => {
+    const docRef = materialAdvancesCollection.doc(id);
+    const doc = await docRef.get();
+    if (!doc.exists) {
+        throw new Error("Material advance record not found");
+    }
+
+    const existingData = doc.data();
+
+    // Clean data
+    if (updateData.amountAdvance !== undefined) {
+        updateData.amountAdvance = Number(updateData.amountAdvance);
+    }
+    delete updateData.materialAdvanceId;
+    delete updateData.createdAt;
+    delete updateData.bankTransactionId; // Don't allow updating this
+
+    // CASE 1: Amount changed (for BANK payment)
+    if (updateData.amountAdvance !== undefined && 
+        updateData.amountAdvance !== existingData.amountAdvance &&
+        existingData.paymentMethod === "BANK" &&
+        existingData.bankId) {
+        
+        const amountDifference = updateData.amountAdvance - existingData.amountAdvance;
+        
+        const bankDoc = await banksCollection.doc(existingData.bankId).get();
+        if (!bankDoc.exists) {
+            throw new Error(`Bank account with ID ${existingData.bankId} not found`);
+        }
+
+        const bankData = bankDoc.data();
+        const currentBalance = Number(bankData.currentBalance || 0);
+        const newBalance = currentBalance - amountDifference; // DEDUCT for material advance
+
+        if (newBalance < 0) {
+            throw new Error(`Insufficient bank balance after adjustment. Current: ${currentBalance}, Difference: ${amountDifference}`);
+        }
+
+        // Update bank balance
+        await banksCollection.doc(existingData.bankId).update({
+            currentBalance: newBalance,
+            closingBalance: newBalance,
+            updatedAt: new Date().toISOString()
+        });
+
+        // Create adjustment transaction in subcollection
+        const adjustmentData = {
+            type: amountDifference > 0 ? "DEBIT" : "CREDIT",
+            amount: Math.abs(amountDifference),
+            projectNo: existingData.projectNo,
+            remark: `Material advance adjustment: ${existingData.remark || "N/A"}`,
+            date: new Date().toISOString().split("T")[0],
+            balanceBefore: currentBalance,
+            balanceAfter: newBalance,
+            transactionType: "MATERIAL_ADVANCE_ADJUSTMENT",
+            createdAt: new Date().toISOString(),
+            relatedMaterialAdvanceId: id,
+            originalTransactionId: existingData.bankTransactionId
+        };
+
+        await banksCollection
+            .doc(existingData.bankId)
+            .collection("transactions")
+            .add(adjustmentData);
+    }
+
+    // CASE 2: Payment method changed from CASH to BANK
+    if (updateData.paymentMethod === "BANK" && 
+        existingData.paymentMethod === "CASH" &&
+        updateData.bankId) {
+        
+        if (!updateData.bankId) {
+            throw new Error("bankId is required when changing paymentMethod to BANK");
+        }
+
+        const bankDoc = await banksCollection.doc(updateData.bankId).get();
+        if (!bankDoc.exists) {
+            throw new Error(`Bank account with ID ${updateData.bankId} not found`);
+        }
+
+        const bankData = bankDoc.data();
+        const currentBalance = Number(bankData.currentBalance || 0);
+        const amount = Number(updateData.amountAdvance || existingData.amountAdvance);
+        const newBalance = currentBalance - amount; // DEDUCT
+
+        if (newBalance < 0) {
+            throw new Error(`Insufficient bank balance. Current: ${currentBalance}, Required: ${amount}`);
+        }
+
+        // Update bank balance
+        await banksCollection.doc(updateData.bankId).update({
+            currentBalance: newBalance,
+            closingBalance: newBalance,
+            updatedAt: new Date().toISOString()
+        });
+
+        // Create transaction in new bank's subcollection
+        const transactionData = {
+            type: "DEBIT",
+            amount: amount,
+            projectNo: existingData.projectNo,
+            remark: updateData.remark || existingData.remark || "Material advance payment",
+            date: updateData.date || existingData.date || new Date().toISOString().split("T")[0],
+            balanceBefore: currentBalance,
+            balanceAfter: newBalance,
+            transactionType: "MATERIAL_ADVANCE_PAID",
+            createdAt: new Date().toISOString(),
+            relatedMaterialAdvanceId: id
+        };
+
+        const transactionRef = await banksCollection
+            .doc(updateData.bankId)
+            .collection("transactions")
+            .add(transactionData);
+
+        updateData.bankName = bankData.accountName || "Unknown Bank";
+        updateData.bankTransactionId = transactionRef.id;
+    }
+
+    // CASE 3: Payment method changed from BANK to CASH
+    if (updateData.paymentMethod === "CASH" && 
+        existingData.paymentMethod === "BANK" &&
+        existingData.bankId) {
+        
+        const bankDoc = await banksCollection.doc(existingData.bankId).get();
+        if (bankDoc.exists) {
+            const bankData = bankDoc.data();
+            const currentBalance = Number(bankData.currentBalance || 0);
+            const amount = Number(existingData.amountAdvance);
+            const newBalance = currentBalance + amount; // CREDIT back (reverse the debit)
+
+            // Revert bank balance
+            await banksCollection.doc(existingData.bankId).update({
+                currentBalance: newBalance,
+                closingBalance: newBalance,
+                updatedAt: new Date().toISOString()
+            });
+
+            // Create credit transaction in subcollection (reversing the debit)
+            const reverseData = {
+                type: "CREDIT",
+                amount: amount,
+                projectNo: existingData.projectNo,
+                remark: `Material advance reversed to CASH: ${existingData.remark || "N/A"}`,
+                date: new Date().toISOString().split("T")[0],
+                balanceBefore: currentBalance,
+                balanceAfter: newBalance,
+                transactionType: "MATERIAL_ADVANCE_REVERSED",
+                createdAt: new Date().toISOString(),
+                relatedMaterialAdvanceId: id,
+                originalTransactionId: existingData.bankTransactionId
+            };
+
+            await banksCollection
+                .doc(existingData.bankId)
+                .collection("transactions")
+                .add(reverseData);
+        }
+
+        delete updateData.bankId;
+        delete updateData.bankName;
+        delete updateData.bankTransactionId;
+    }
+
+    // Update advance record
+    await docRef.update(updateData);
+    const updatedDoc = await docRef.get();
+    return { materialAdvanceId: id, ...updatedDoc.data() };
+};
+
+/**
+ * Delete a material advance record
+ * If paymentMethod was BANK, revert the bank balance and create reverse transaction
+ */
+exports.deleteMaterialAdvance = async (id) => {
+    const docRef = materialAdvancesCollection.doc(id);
+    const doc = await docRef.get();
+    if (!doc.exists) {
+        throw new Error("Material advance record not found");
+    }
+
+    const advanceData = doc.data();
+
+    // If this was a BANK payment, revert the bank balance and create reverse transaction
+    if (advanceData.paymentMethod === "BANK" && advanceData.bankId) {
+        const bankDoc = await banksCollection.doc(advanceData.bankId).get();
+        if (bankDoc.exists) {
+            const bankData = bankDoc.data();
+            const currentBalance = Number(bankData.currentBalance || 0);
+            const amountToRevert = Number(advanceData.amountAdvance || 0);
+            const newBalance = currentBalance + amountToRevert; // CREDIT back
+            
+            // Revert bank balance
+            await banksCollection.doc(advanceData.bankId).update({
+                currentBalance: newBalance,
+                closingBalance: newBalance,
+                updatedAt: new Date().toISOString()
+            });
+
+            // Create deletion transaction in subcollection
+            const deletionData = {
+                type: "CREDIT",
+                amount: amountToRevert,
+                projectNo: advanceData.projectNo,
+                remark: `Material advance deleted: ${advanceData.remark || "N/A"}`,
+                date: new Date().toISOString().split("T")[0],
+                balanceBefore: currentBalance,
+                balanceAfter: newBalance,
+                transactionType: "MATERIAL_ADVANCE_DELETED",
+                createdAt: new Date().toISOString(),
+                relatedMaterialAdvanceId: id,
+                originalTransactionId: advanceData.bankTransactionId
+            };
+
+            await banksCollection
+                .doc(advanceData.bankId)
+                .collection("transactions")
+                .add(deletionData);
+        }
+    }
+
+    // Delete advance record
+    await docRef.delete();
+    return { message: "Material advance record deleted successfully" };
+};
+
+/**
+ * Get bank transaction history for a specific bank (used by advance service)
+ */
+exports.getBankTransactionHistoryForMaterialAdvance = async (bankId) => {
+    try {
+        const snapshot = await banksCollection
+            .doc(bankId)
+            .collection("transactions")
+            .orderBy("createdAt", "desc")
+            .get();
+
+        const transactions = [];
+        let totalCredit = 0;
+        let totalDebit = 0;
+
+        snapshot.forEach((doc) => {
+            const data = doc.data();
+            const amount = Number(data.amount || 0);
+
+            if (data.type === "CREDIT") {
+                totalCredit += amount;
+            } else {
+                totalDebit += amount;
+            }
+
+            transactions.push({
+                transactionId: doc.id,
+                ...data
+            });
+        });
+
+        return {
+            transactions,
+            summary: {
+                totalCredit,
+                totalDebit,
+                netChange: totalCredit - totalDebit
+            }
+        };
+    } catch (error) {
+        throw new Error(`Failed to fetch bank transactions: ${error.message}`);
+    }
+};
+
+module.exports = exports;

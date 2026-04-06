@@ -48,7 +48,6 @@ exports.getMaterialReceivedByMaterialId = async (req, res, next) => {
     }
 };
 
-
 exports.updateReceiptPayment = async (req, res, next) => {
     try {
         const result = await materialService.updateReceiptPayment(req.params.receiptId, req.body);
@@ -108,7 +107,6 @@ exports.deleteMaterialUsed = async (req, res, next) => {
     }
 };
 
-
 // --- Material Stock --- //
 exports.getMaterialStock = async (req, res, next) => {
     try {
@@ -120,7 +118,6 @@ exports.getMaterialStock = async (req, res, next) => {
     }
 };
 
-
 exports.addMaterialRequired = async (req, res, next) => {
     try {
         const result = await materialService.addMaterialRequired(req.body);
@@ -129,8 +126,6 @@ exports.addMaterialRequired = async (req, res, next) => {
         res.status(500).json({ error: error.message });
     }
 };
-
-
 
 exports.getMaterialRequired = async (req, res, next) => {
     try {
@@ -149,3 +144,99 @@ exports.getAllMaterialRequired = async (req, res, next) => {
         res.status(500).json({ success: false, message: error.message });
     }
 };
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ──── MATERIAL ADVANCE PAYMENT CONTROLLERS ──────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * POST /api/materials/advances
+ * Create a new material advance payment
+ */
+exports.createMaterialAdvance = async (req, res, next) => {
+    try {
+        const result = await materialService.createMaterialAdvance(req.body);
+        res.status(201).json({ 
+            success: true, 
+            data: result,
+            message: `Material advance created successfully${result.paymentMethod === 'BANK' ? ' and bank balance updated with transaction record' : ''}`
+        });
+    } catch (error) {
+        res.status(400).json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * GET /api/materials/advances
+ * GET /api/materials/advances?projectNo=P001
+ * GET /api/materials/advances/project/:projectNo
+ * Get material advances for a project or all advances
+ */
+exports.getMaterialAdvances = async (req, res, next) => {
+    try {
+        const projectNo = req.params.projectNo || req.query.projectNo;
+        const result = await materialService.getMaterialAdvances(projectNo);
+        res.status(200).json({ 
+            success: true, 
+            data: result
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * PUT /api/materials/advances/:id
+ * Update a material advance record
+ * If amount or paymentMethod changes, bank balance and transactions are updated
+ */
+exports.updateMaterialAdvance = async (req, res, next) => {
+    try {
+        const result = await materialService.updateMaterialAdvance(req.params.id, req.body);
+        res.status(200).json({ 
+            success: true, 
+            data: result,
+            message: "Material advance updated successfully and bank transactions adjusted if applicable"
+        });
+    } catch (error) {
+        res.status(400).json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * DELETE /api/materials/advances/:id
+ * Delete a material advance record
+ * If paymentMethod was BANK, the bank balance will be reverted with transaction record
+ */
+exports.deleteMaterialAdvance = async (req, res, next) => {
+    try {
+        const result = await materialService.deleteMaterialAdvance(req.params.id);
+        res.status(200).json({ 
+            success: true, 
+            ...result,
+            message: "Material advance deleted successfully and bank balance adjusted with reverse transaction"
+        });
+    } catch (error) {
+        res.status(400).json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * GET /api/materials/advances/bank/:bankId/transactions
+ * Get transaction history for a specific bank account (material advances)
+ */
+exports.getBankTransactionHistoryForMaterialAdvance = async (req, res, next) => {
+    try {
+        const { bankId } = req.params;
+        const result = await materialService.getBankTransactionHistoryForMaterialAdvance(bankId);
+        res.status(200).json({ 
+            success: true, 
+            data: result,
+            message: "Bank transaction history retrieved successfully"
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+module.exports = exports;

@@ -23,14 +23,56 @@ router.get("/used", isAdmin, materialController.getAllMaterialUsed);
 router.get("/used/:projectNo", isAdmin, materialController.getAllMaterialUsed);
 router.put("/used/:usageId", isAdmin, materialController.updateMaterialUsed);
 router.delete("/used/:usageId", isAdmin, materialController.deleteMaterialUsed);
+
 // --- Material Stock --- //
 router.get("/stock/:projectNo", isAdmin, materialController.getMaterialStock);
 
 // --- Material Required --- //
 router.post("/required", isAdmin, materialController.addMaterialRequired);
-
 router.get("/required", isAdmin, materialController.getAllMaterialRequired);
 router.get("/required/:projectNo", isAdmin, materialController.getMaterialRequired);
 
-module.exports = router;
+// ═════════════════════════════════════════════════════════════════════════════
+// ──── MATERIAL ADVANCE PAYMENT ROUTES ──────────────────────────────────────
+// ═════════════════════════════════════════════════════════════════════════════
 
+/**
+ * POST /api/materials/advances
+ * Create a new material advance payment
+ * Body: { projectNo, amountAdvance, paymentMethod, bankId?, remark?, date? }
+ */
+router.post("/advances", isAdmin, materialController.createMaterialAdvance);
+
+/**
+ * GET /api/materials/advances
+ * Get all material advances globally
+ */
+router.get("/advances", isAdmin, materialController.getMaterialAdvances);
+
+/**
+ * GET /api/materials/advances/bank/:bankId/transactions
+ * Get transaction history for a specific bank account
+ */
+router.get("/advances/bank/:bankId/transactions", isAdmin, materialController.getBankTransactionHistoryForMaterialAdvance);
+
+/**
+ * GET /api/materials/advances/project/:projectNo
+ * Get material advances for a specific project
+ */
+router.get("/advances/project/:projectNo", isAdmin, materialController.getMaterialAdvances);
+
+/**
+ * PUT /api/materials/advances/:id
+ * Update a material advance record
+ * If amount or paymentMethod changes, bank balance and transactions are updated
+ */
+router.put("/advances/:id", isAdmin, materialController.updateMaterialAdvance);
+
+/**
+ * DELETE /api/materials/advances/:id
+ * Delete a material advance record
+ * If paymentMethod was BANK, the bank balance will be reverted
+ */
+router.delete("/advances/:id", isAdmin, materialController.deleteMaterialAdvance);
+
+module.exports = router;
