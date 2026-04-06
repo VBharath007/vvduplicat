@@ -7,6 +7,8 @@ const { authorize } = require("../../middleware/role.middleware");
 
 const isAdmin = [verifyToken, authorize(["admin"])];
 
+router.put("/:labourId/payment", isAdmin, labourController.payLabour);
+
 // ─── Head Labour Master CRUD ────────────────────────────────────────────────
 router.post("/master", isAdmin, labourController.addMasterLabour);
 router.get("/master", isAdmin, labourController.getAllHeadLabours);

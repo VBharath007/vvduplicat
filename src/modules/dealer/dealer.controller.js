@@ -1,7 +1,6 @@
 const dealerService = require("./dealer.service");
 
-// ─── 1. Get all dealers ───────────────────────────────────────────────────────
-// GET /api/dealers
+
 exports.getAllDealers = async (req, res) => {
     try {
         const result = await dealerService.getAllDealers();

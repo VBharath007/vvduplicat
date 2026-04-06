@@ -1,6 +1,7 @@
 const { db } = require("../../config/firebase");
 const { LABOUR_MASTERS, SUB_LABOUR_TYPES } = require("../../models/firestore.collections");
 const dayjs = require("dayjs");
+const banksCollection = db.collection("banks");
 
 const labourMasterCollection = db.collection(LABOUR_MASTERS);
 const subLabourTypeCollection = db.collection(SUB_LABOUR_TYPES);
@@ -248,4 +249,89 @@ exports.deleteSubLabourType = async (id) => {
 
     await docRef.delete();
     return { message: `Sub-labour type '${existing.typeName}' deleted successfully` };
+};
+
+exports.payLabour = async (labourId, amount, method, bankId) => {
+    if (!labourId) throw new Error("labourId is required");
+    if (!amount || Number(amount) <= 0)
+        throw new Error("Valid amount required");
+
+    const paymentAmount = Number(amount);
+    const paymentMethod = (method || "cash").toLowerCase();
+
+    let bankData = null;
+    let currentBalance = 0;
+    let newBalance = 0;
+    let bankTransactionId = null;
+
+    // ─────────────────────────────
+    // 🏦 BANK LOGIC (DEBIT)
+    // ─────────────────────────────
+    if (paymentMethod === "bank") {
+        if (!bankId) throw new Error("bankId is required");
+
+        const bankDoc = await banksCollection.doc(bankId).get();
+        if (!bankDoc.exists) throw new Error("Bank not found");
+
+        bankData = bankDoc.data();
+        currentBalance = Number(bankData.currentBalance || 0);
+
+        if (currentBalance < paymentAmount) {
+            throw new Error("Insufficient bank balance");
+        }
+
+        newBalance = currentBalance - paymentAmount;
+
+        // update bank
+        await banksCollection.doc(bankId).update({
+            currentBalance: newBalance,
+            closingBalance: newBalance,
+            updatedAt: new Date().toISOString()
+        });
+
+        // transaction
+        const txnRef = await banksCollection
+            .doc(bankId)
+            .collection("transactions")
+            .add({
+                type: "DEBIT",
+                amount: paymentAmount,
+                remark: `Labour Payment - ${labourId}`,
+                transactionType: "LABOUR_PAYMENT",
+                balanceBefore: currentBalance,
+                balanceAfter: newBalance,
+                createdAt: new Date().toISOString(),
+                relatedLabour: labourId
+            });
+
+        bankTransactionId = txnRef.id;
+    }
+
+    // ─────────────────────────────
+    // 💰 EXISTING LOGIC PLACE
+    // ─────────────────────────────
+    // 👉 DO NOT MODIFY YOUR EXISTING PAYMENT LOGIC
+    // Just call it here if exists OR add your own logic
+
+    // Example placeholder:
+    // await yourExistingLabourPaymentLogic(labourId, paymentAmount);
+
+    // ─────────────────────────────
+    // 📄 SAVE PAYMENT RECORD
+    // ─────────────────────────────
+    await db.collection("labourPayments").add({
+        labourId,
+        amountPaid: paymentAmount,
+        method: paymentMethod,
+        bankId: bankId || null,
+        bankName: bankData?.accountName || null,
+        bankTransactionId: bankTransactionId || null,
+        date: new Date().toISOString(),
+        type: "Payment",
+    });
+
+    return {
+        success: true,
+        message: "Labour payment successful"
+    };
 };

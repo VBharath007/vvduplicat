@@ -13,7 +13,33 @@ exports.addMasterLabour = async (req, res) => {
         res.status(400).json({ error: error.message });
     }
 };
+exports.payLabour = async (req, res) => {
+    try {
+        const { labourId } = req.params;
+        const { amount, method, bankId } = req.body;
 
+        const result = await labourService.payLabour(
+            labourId,
+            amount,
+            method,
+            bankId
+        );
+
+        res.status(200).json({
+            success: true,
+            data: result,
+            message:
+                method === "bank"
+                    ? "Labour payment done & bank updated"
+                    : "Labour payment done"
+        });
+    } catch (error) {
+        res.status(400).json({
+            success: false,
+            error: error.message
+        });
+    }
+};
 exports.updateMasterLabour = async (req, res) => {
     try {
         const result = await labourService.updateLabourMaster(req.params.id, req.body);
