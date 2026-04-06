@@ -163,13 +163,17 @@ exports.recordMaterialReceived = async (receivedData) => {
         totalAmount,
         paidAmount,
         dueAmount: Math.max(0, totalAmount - paidAmount),
+        method: (receivedData.method || "cash").toLowerCase(),
+        bankId: receivedData.bankId || null,
+        bankName: null,
+        bankTransactionId: null,
         createdAt: new Date().toISOString()
     };
 
     const docRef = await materialReceivedCollection.add(finalData);
     const receiptId = docRef.id;
 
-    // Stock update
+    // Stock update (EXISTING — unchanged)
     if (stockDoc.exists) {
         const s = stockDoc.data();
         await stockRef.update({
@@ -189,6 +193,26 @@ exports.recordMaterialReceived = async (receivedData) => {
         });
     }
 
+    // 🏦 BANK DEBIT: If paid via bank, deduct and record transaction
+    if (finalData.method === "bank" && finalData.bankId && paidAmount > 0) {
+        const result = await handleBankTransaction({
+            bankId: finalData.bankId,
+            amount: paidAmount,
+            type: "DEBIT",
+            remark: `Material Purchase: ${normalizedName} - ${receiptId}`,
+            transactionType: "MATERIAL_PAYMENT",
+            relatedId: receiptId
+        });
+        // Update the receipt with bank details
+        await docRef.update({
+            bankName: result.bankName,
+            bankTransactionId: result.transactionId
+        });
+        finalData.bankName = result.bankName;
+        finalData.bankTransactionId = result.transactionId;
+    }
+
+    // Expense tracking (EXISTING — unchanged)
     if (paidAmount > 0) {
         await _createMaterialExpense(receiptId, finalData, paidAmount);
     }
@@ -213,31 +237,174 @@ exports.getMaterialReceivedByMaterialId = async (materialId) => {
 exports.updateReceiptPayment = async (receiptId, paymentData) => {
     const docRef = materialReceivedCollection.doc(receiptId);
     const doc = await docRef.get();
+
     if (!doc.exists) throw new Error("Material received record not found");
 
     const existingData = doc.data();
+
     const totalAmount = Number(existingData.totalAmount) || 0;
     const oldPaidAmount = Number(existingData.paidAmount) || 0;
     const newPaidAmount = Number(paymentData.paidAmount) || 0;
+
+    const newMethod = (paymentData.method || "cash").toLowerCase();
+    const oldMethod = (existingData.method || "cash").toLowerCase();
+    const newBankId = paymentData.bankId || null;
+    const oldBankId = existingData.bankId || null;
 
     if (newPaidAmount > totalAmount) {
         throw new Error(`Paid amount (${newPaidAmount}) cannot exceed total amount (${totalAmount})`);
     }
 
+    // ─────────────────────────────
+    // 🏦 BANK LOGIC — handles all 4 method transitions
+    // ─────────────────────────────
+    let bankName = null;
+    let bankTransactionId = null;
+
+    const diffAmount = newPaidAmount - oldPaidAmount;
+
+    // CASE 1: bank → bank (same method, amount changed)
+    if (oldMethod === "bank" && newMethod === "bank") {
+        const bankId = newBankId || oldBankId;
+        if (!bankId) throw new Error("bankId is required");
+
+        if (diffAmount !== 0) {
+            const result = await handleBankTransaction({
+                bankId,
+                amount: Math.abs(diffAmount),
+                type: diffAmount > 0 ? "DEBIT" : "CREDIT",
+                remark: diffAmount > 0
+                    ? `Material Payment - ${receiptId}`
+                    : `Material Payment Refund - ${receiptId}`,
+                transactionType: diffAmount > 0 ? "MATERIAL_PAYMENT" : "MATERIAL_PAYMENT_REFUND",
+                relatedId: receiptId
+            });
+            bankTransactionId = result.transactionId;
+            bankName = result.bankName;
+        } else {
+            bankName = existingData.bankName || null;
+            bankTransactionId = existingData.bankTransactionId || null;
+        }
+    }
+
+    // CASE 2: cash → bank (switch method — debit full new amount)
+    if (oldMethod === "cash" && newMethod === "bank") {
+        if (!newBankId) throw new Error("bankId is required when switching to bank");
+
+        if (newPaidAmount > 0) {
+            const result = await handleBankTransaction({
+                bankId: newBankId,
+                amount: newPaidAmount,
+                type: "DEBIT",
+                remark: `Material Payment (switched to Bank) - ${receiptId}`,
+                transactionType: "MATERIAL_PAYMENT",
+                relatedId: receiptId
+            });
+            bankTransactionId = result.transactionId;
+            bankName = result.bankName;
+        }
+    }
+
+    // CASE 3: bank → cash (switch method — credit back old amount)
+    if (oldMethod === "bank" && newMethod === "cash" && oldBankId) {
+        if (oldPaidAmount > 0) {
+            await handleBankTransaction({
+                bankId: oldBankId,
+                amount: oldPaidAmount,
+                type: "CREDIT",
+                remark: `Material Payment Reversed (switched to Cash) - ${receiptId}`,
+                transactionType: "MATERIAL_PAYMENT_REVERSED",
+                relatedId: receiptId
+            });
+        }
+        bankTransactionId = null;
+        bankName = null;
+    }
+
+    // CASE 4: cash → cash — no bank action needed
+
+    // ─────────────────────────────
+    // 💾 EXISTING LOGIC (UNCHANGED)
+    // ─────────────────────────────
     const dueAmount = Math.max(0, totalAmount - newPaidAmount);
+
     await docRef.update({
         paidAmount: newPaidAmount,
         dueAmount,
         updatedAt: new Date().toISOString(),
+
+        // ✅ Payment method fields
+        method: newMethod,
+        bankId: newMethod === "bank" ? (newBankId || oldBankId || null) : null,
+        bankName: newMethod === "bank" ? bankName : null,
+        bankTransactionId: newMethod === "bank" ? bankTransactionId : null,
     });
 
+    // 🔁 EXISTING EXPENSE UPDATE (KEEP SAME)
     if (newPaidAmount !== oldPaidAmount) {
         await _updateMaterialExpense(receiptId, newPaidAmount);
     }
 
     const updatedDoc = await docRef.get();
-    return { receiptId: updatedDoc.id, ...updatedDoc.data() };
+
+    return {
+        receiptId: updatedDoc.id,
+        ...updatedDoc.data()
+    };
 };
+
+async function handleBankTransaction({
+    bankId,
+    amount,
+    type, // "DEBIT" or "CREDIT"
+    remark,
+    transactionType,
+    relatedId
+}) {
+    const bankDoc = await banksCollection.doc(bankId).get();
+    if (!bankDoc.exists) throw new Error("Bank not found");
+
+    const bank = bankDoc.data();
+    const currentBalance = Number(bank.currentBalance || 0);
+
+    let newBalance;
+
+    if (type === "DEBIT") {
+        if (currentBalance < amount) {
+            throw new Error("Insufficient bank balance");
+        }
+        newBalance = currentBalance - amount;
+    } else {
+        newBalance = currentBalance + amount;
+    }
+
+    // update bank
+    await banksCollection.doc(bankId).update({
+        currentBalance: newBalance,
+        closingBalance: newBalance,
+        updatedAt: new Date().toISOString()
+    });
+
+    // create transaction
+    const txnRef = await banksCollection
+        .doc(bankId)
+        .collection("transactions")
+        .add({
+            type,
+            amount,
+            remark,
+            transactionType,
+            balanceBefore: currentBalance,
+            balanceAfter: newBalance,
+            createdAt: new Date().toISOString(),
+            relatedId
+        });
+
+    return {
+        bankName: bank.accountName || null,
+        transactionId: txnRef.id
+    };
+}   
 
 exports.updateMaterialReceived = async (receiptId, updateData) => {
     const docRef = materialReceivedCollection.doc(receiptId);
@@ -250,13 +417,74 @@ exports.updateMaterialReceived = async (receiptId, updateData) => {
     const oldTotalAmount = oldQty * oldRate;
     const oldPaidAmount = Number(oldData.paidAmount) || 0;
 
-    const newQty = Number(updateData.quantity) !== undefined ? Number(updateData.quantity) : oldQty;
-    const newRate = Number(updateData.rate) !== undefined ? Number(updateData.rate) : oldRate;
+    const newQty = updateData.quantity !== undefined ? Number(updateData.quantity) : oldQty;
+    const newRate = updateData.rate !== undefined ? Number(updateData.rate) : oldRate;
     const newTotalAmount = newQty * newRate;
-    const newPaidAmount = Number(updateData.paidAmount) !== undefined ? Number(updateData.paidAmount) : oldPaidAmount;
+    const newPaidAmount = updateData.paidAmount !== undefined ? Number(updateData.paidAmount) : oldPaidAmount;
 
     if (newPaidAmount > newTotalAmount) {
         throw new Error(`Paid amount (${newPaidAmount}) cannot exceed total amount (${newTotalAmount})`);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // 🏦 BANK PAYMENT LOGIC (added — mirrors updateReceiptPayment pattern)
+    // ─────────────────────────────────────────────────────────────────────
+    const newMethod = updateData.method ? updateData.method.toLowerCase() : (oldData.method || "cash");
+    const oldMethod = (oldData.method || "cash").toLowerCase();
+    const newBankId = updateData.bankId || oldData.bankId || null;
+    const oldBankId = oldData.bankId || null;
+    const paidDiff = newPaidAmount - oldPaidAmount;
+
+    let bankTransactionId = oldData.bankTransactionId || null;
+    let bankName = oldData.bankName || null;
+
+    // CASE A: Was BANK, staying BANK — handle amount difference
+    if (oldMethod === "bank" && newMethod === "bank" && oldBankId && paidDiff !== 0) {
+        const bankId = newBankId || oldBankId;
+        const result = await handleBankTransaction({
+            bankId,
+            amount: Math.abs(paidDiff),
+            type: paidDiff > 0 ? "DEBIT" : "CREDIT",
+            remark: paidDiff > 0
+                ? `Material Payment Increase - ${receiptId}`
+                : `Material Payment Decrease - ${receiptId}`,
+            transactionType: paidDiff > 0 ? "MATERIAL_PAYMENT" : "MATERIAL_PAYMENT_REFUND",
+            relatedId: receiptId
+        });
+        bankTransactionId = result.transactionId;
+        bankName = result.bankName;
+    }
+
+    // CASE B: Was CASH, switching to BANK — debit the full new paid amount
+    if (oldMethod === "cash" && newMethod === "bank" && newBankId) {
+        if (newPaidAmount > 0) {
+            const result = await handleBankTransaction({
+                bankId: newBankId,
+                amount: newPaidAmount,
+                type: "DEBIT",
+                remark: `Material Payment (switched to Bank) - ${receiptId}`,
+                transactionType: "MATERIAL_PAYMENT",
+                relatedId: receiptId
+            });
+            bankTransactionId = result.transactionId;
+            bankName = result.bankName;
+        }
+    }
+
+    // CASE C: Was BANK, switching to CASH — credit back the old paid amount
+    if (oldMethod === "bank" && newMethod === "cash" && oldBankId) {
+        if (oldPaidAmount > 0) {
+            await handleBankTransaction({
+                bankId: oldBankId,
+                amount: oldPaidAmount,
+                type: "CREDIT",
+                remark: `Material Payment Reversed (switched to Cash) - ${receiptId}`,
+                transactionType: "MATERIAL_PAYMENT_REVERSED",
+                relatedId: receiptId
+            });
+        }
+        bankTransactionId = null;
+        bankName = null;
     }
 
     const updatedRecord = {
@@ -266,10 +494,14 @@ exports.updateMaterialReceived = async (receiptId, updateData) => {
         totalAmount: newTotalAmount,
         paidAmount: newPaidAmount,
         dueAmount: Math.max(0, newTotalAmount - newPaidAmount),
+        method: newMethod,
+        bankId: newMethod === "bank" ? (newBankId || null) : null,
+        bankName: newMethod === "bank" ? bankName : null,
+        bankTransactionId: newMethod === "bank" ? bankTransactionId : null,
         updatedAt: new Date().toISOString(),
     };
 
-    // Stock diff-based update
+    // Stock diff-based update (EXISTING — unchanged)
     const qtyDiff = newQty - oldQty;
     if (qtyDiff !== 0) {
         const stockId = `${oldData.projectNo}_${oldData.materialId}`;
@@ -291,6 +523,7 @@ exports.updateMaterialReceived = async (receiptId, updateData) => {
     );
     await docRef.update(cleanRecord);
 
+    // Expense update (EXISTING — unchanged)
     if (newPaidAmount !== oldPaidAmount) {
         await _updateMaterialExpense(receiptId, newPaidAmount);
     }
@@ -318,9 +551,23 @@ exports.deleteMaterialReceived = async (receiptId) => {
         });
     }
 
+    // 🏦 BANK REVERSAL: If this receipt was paid via bank, credit back
+    const paidAmount = Number(data.paidAmount) || 0;
+    const method = (data.method || "cash").toLowerCase();
+    if (method === "bank" && data.bankId && paidAmount > 0) {
+        await handleBankTransaction({
+            bankId: data.bankId,
+            amount: paidAmount,
+            type: "CREDIT",
+            remark: `Material Receipt Deleted - ${receiptId}`,
+            transactionType: "MATERIAL_PAYMENT_REVERSED",
+            relatedId: receiptId
+        });
+    }
+
     await _deleteMaterialExpense(receiptId);
     await docRef.delete();
-    return { message: "Material receipt deleted and stock/expense restored", receiptId };
+    return { message: "Material receipt deleted and stock/expense/bank restored", receiptId };
 };
 
 // ─── Material Used ────────────────────────────────────────────────────────────

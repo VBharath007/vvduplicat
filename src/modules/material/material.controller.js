@@ -50,16 +50,40 @@ exports.getMaterialReceivedByMaterialId = async (req, res, next) => {
 
 exports.updateReceiptPayment = async (req, res, next) => {
     try {
-        const result = await materialService.updateReceiptPayment(req.params.receiptId, req.body);
+        const result = await materialService.updateReceiptPayment(
+            req.params.receiptId,
+            req.body
+        );
+
+        res.status(200).json({
+            success: true,
+            data: result,
+            message:
+                req.body.method === "bank"
+                    ? "Material payment done & bank updated"
+                    : "Material payment updated"
+        });
+    } catch (error) {
+        res.status(400).json({
+            success: false,
+            message: error.message
+        });
+    }
+};
+
+
+exports.updateMaterialReceived = async (req, res, next) => {
+    try {
+        const result = await materialService.updateMaterialReceived(req.params.receiptId, req.body);
         res.status(200).json({ success: true, data: result });
     } catch (error) {
         res.status(400).json({ success: false, message: error.message });
     }
 };
 
-exports.updateMaterialReceived = async (req, res, next) => {
+exports.deleteMaterialReceived = async (req, res, next) => {
     try {
-        const result = await materialService.updateMaterialReceived(req.params.receiptId, req.body);
+        const result = await materialService.deleteMaterialReceived(req.params.receiptId);
         res.status(200).json({ success: true, data: result });
     } catch (error) {
         res.status(400).json({ success: false, message: error.message });

@@ -3,6 +3,13 @@ const router = express.Router();
 const materialController = require("./material.controller");
 const { verifyToken } = require("../../middleware/auth.middleware");
 const { authorize } = require("../../middleware/role.middleware");
+const {
+    validateRecordMaterialReceived,
+    validateUpdateMaterialReceived,
+    validateUpdateReceiptPayment,
+    validateRecordMaterialUsed,
+    validateCreateMaterialAdvance,
+} = require("./material.validation");
 
 const isAdmin = [verifyToken, authorize(["admin"])];
 
@@ -11,14 +18,15 @@ const isAdmin = [verifyToken, authorize(["admin"])];
 // router.get("/", isAdmin, materialController.getMaterials);
 
 // --- Material Received --- //
-router.post("/received", isAdmin, materialController.recordMaterialReceived);
+router.post("/received", isAdmin, validateRecordMaterialReceived, materialController.recordMaterialReceived);
 router.get("/received", isAdmin, materialController.getMaterialReceived);
 router.get("/received/:materialId", isAdmin, materialController.getMaterialReceivedByMaterialId);
-router.put("/received/:receiptId", isAdmin, materialController.updateMaterialReceived);
-router.put("/received/:receiptId/payment", isAdmin, materialController.updateReceiptPayment);
+router.put("/received/:receiptId", isAdmin, validateUpdateMaterialReceived, materialController.updateMaterialReceived);
+router.put("/received/:receiptId/payment", isAdmin, validateUpdateReceiptPayment, materialController.updateReceiptPayment);
+router.delete("/received/:receiptId", isAdmin, materialController.deleteMaterialReceived);
 
 // --- Material Used --- //
-router.post("/used", isAdmin, materialController.recordMaterialUsed);
+router.post("/used", isAdmin, validateRecordMaterialUsed, materialController.recordMaterialUsed);
 router.get("/used", isAdmin, materialController.getAllMaterialUsed);
 router.get("/used/:projectNo", isAdmin, materialController.getAllMaterialUsed);
 router.put("/used/:usageId", isAdmin, materialController.updateMaterialUsed);
@@ -41,7 +49,7 @@ router.get("/required/:projectNo", isAdmin, materialController.getMaterialRequir
  * Create a new material advance payment
  * Body: { projectNo, amountAdvance, paymentMethod, bankId?, remark?, date? }
  */
-router.post("/advances", isAdmin, materialController.createMaterialAdvance);
+router.post("/advances", isAdmin, validateCreateMaterialAdvance, materialController.createMaterialAdvance);
 
 /**
  * GET /api/materials/advances
