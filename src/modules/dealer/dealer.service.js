@@ -4,6 +4,7 @@ const materialReceivedCollection = db.collection("materialReceived");
 const paymentsCollection = db.collection("dealerPayments");
 const projectsCollection = db.collection("projects");
 const siteExpensesCollection = db.collection("siteExpenses");
+const banksCollection = db.collection("banks");
 
 // ─── Internal helper ──────────────────────────────────────────────────────────
 const getPhoneVariations = (phone) => {
@@ -602,7 +603,7 @@ exports.getDealerProjectPaymentLog = async (phoneNumber, projectNo) => {
 //    • Logs entry in dealerPayments collection (with projectNo stored)
 //    • Returns full updated payment log for this project
 // =============================================================================
-exports.payDealerProjectPayment = async (phoneNumber, projectNo, amount, method) => {
+exports.payDealerProjectPayment = async (phoneNumber, projectNo, amount, method, bankId) => {
     if (!phoneNumber) throw new Error("phoneNumber is required");
     if (!projectNo) throw new Error("projectNo is required");
     if (!amount || Number(amount) <= 0)
@@ -612,53 +613,20 @@ exports.payDealerProjectPayment = async (phoneNumber, projectNo, amount, method)
     const paymentMethod = method || "cash";
     const paymentDate = new Date();
     const paymentDateISO = paymentDate.toISOString();
-    const displayDate = paymentDateISO.split("T")[0];   // "2026-03-14"
+    const displayDate = paymentDateISO.split("T")[0];
 
-    // ── DEDUP GUARD ───────────────────────────────────────────────────────────
-    // Prevent duplicate entries when Flutter calls the API twice
-    // (double tap, retry, or network timeout re-submit).
-    // Rule: same dealer + same project + same amount within last 60 seconds = duplicate
-    const oneMinuteAgo = new Date(paymentDate.getTime() - 60 * 1000).toISOString();
     const variations = getPhoneVariations(phoneNumber);
-    const dupSnap = await paymentsCollection
-        .where("dealerContact", "in", variations)
-        .where("projectNo", "==", projectNo)
-        .where("amountPaid", "==", paymentAmount)
-        .get();
 
-    if (!dupSnap.empty) {
-        // Check if any of these entries were created within the last 60 seconds
-        const recentDup = dupSnap.docs.find(doc => {
-            const docDate = doc.data().date || "";
-            return docDate >= oneMinuteAgo;
-        });
-
-        if (recentDup) {
-            // Duplicate call — return success without doing anything again
-            console.warn(`[payDealerProjectPayment] Duplicate payment blocked for ${phoneNumber} / ${projectNo} / ₹${paymentAmount}`);
-            return {
-                success: true,
-                duplicate: true,
-                projectNo,
-                message: "Duplicate payment request ignored",
-                logs: [{
-                    amount: paymentAmount,
-                    date: displayDate,
-                    method: paymentMethod,
-                }],
-            };
-        }
-    }
-    // ─────────────────────────────────────────────────────────────────────────
-
-    // Fetch only bills for this dealer + this project
+    // ─────────────────────────────────────────────
+    // 1. FETCH BILLS FIRST (IMPORTANT)
+    // ─────────────────────────────────────────────
     const snapshot = await materialReceivedCollection
         .where("dealerContact", "in", variations)
         .where("projectNo", "==", projectNo)
         .get();
 
     let totalPending = 0;
-    let dealerName = ""; // Capture dealerName
+    let dealerName = "";
 
     if (!snapshot.empty) {
         snapshot.forEach(doc => {
@@ -668,22 +636,75 @@ exports.payDealerProjectPayment = async (phoneNumber, projectNo, amount, method)
         });
     }
 
+    // ─────────────────────────────────────────────
+    // 2. VALIDATION FIRST (CRITICAL FIX)
+    // ─────────────────────────────────────────────
     if (totalPending <= 0) {
-        throw new Error("All bills for this project are already fully paid. No pending amount.");
+        throw new Error("All bills already fully paid");
     }
 
     if (paymentAmount > totalPending) {
-        throw new Error(`You can only pay up to the total pending amount of ₹${totalPending}.`);
+        throw new Error(`You can only pay up to ₹${totalPending}`);
     }
 
-    // Sort bills FIFO — oldest first
+    // ─────────────────────────────────────────────
+    // 3. BANK LOGIC (DEBIT)
+    // ─────────────────────────────────────────────
+    let bankData = null;
+    let currentBalance = 0;
+    let newBalance = 0;
+    let bankTransactionId = null;
+
+    if (paymentMethod === "bank") {
+        if (!bankId) throw new Error("bankId is required for BANK payment");
+
+        const bankDoc = await banksCollection.doc(bankId).get();
+        if (!bankDoc.exists) throw new Error("Bank not found");
+
+        bankData = bankDoc.data();
+        currentBalance = Number(bankData.currentBalance || 0);
+
+        if (currentBalance < paymentAmount) {
+            throw new Error("Insufficient bank balance");
+        }
+
+        newBalance = currentBalance - paymentAmount;
+
+        // Update bank
+        await banksCollection.doc(bankId).update({
+            currentBalance: newBalance,
+            closingBalance: newBalance,
+            updatedAt: new Date().toISOString()
+        });
+
+        // Create DEBIT transaction
+        const txnRef = await banksCollection
+            .doc(bankId)
+            .collection("transactions")
+            .add({
+                type: "DEBIT",
+                amount: paymentAmount,
+                projectNo,
+                remark: `Dealer Payment - ${phoneNumber}`,
+                date: displayDate,
+                balanceBefore: currentBalance,
+                balanceAfter: newBalance,
+                transactionType: "DEALER_PAYMENT",
+                createdAt: new Date().toISOString(),
+                relatedDealer: phoneNumber
+            });
+
+        bankTransactionId = txnRef.id;
+    }
+
+    // ─────────────────────────────────────────────
+    // 4. FIFO PAYMENT APPLY
+    // ─────────────────────────────────────────────
     const bills = [];
-    if (!snapshot.empty) {
-        snapshot.forEach(doc => bills.push({ id: doc.id, ref: doc.ref, data: doc.data() }));
-        bills.sort((a, b) => new Date(a.data.createdAt || 0) - new Date(b.data.createdAt || 0));
-    }
+    snapshot.forEach(doc => bills.push({ id: doc.id, ref: doc.ref, data: doc.data() }));
 
-    // Apply payment FIFO across this project's bills only
+    bills.sort((a, b) => new Date(a.data.createdAt || 0) - new Date(b.data.createdAt || 0));
+
     let remaining = paymentAmount;
     const updatedBills = [];
 
@@ -694,17 +715,23 @@ exports.payDealerProjectPayment = async (phoneNumber, projectNo, amount, method)
         const total = Number(bill.data.totalAmount) || 0;
         const pending = total - oldPaid;
 
-        if (pending <= 0) continue;   // already fully paid
+        if (pending <= 0) continue;
 
         const apply = Math.min(pending, remaining);
         const newPaid = oldPaid + apply;
         remaining -= apply;
 
-        updatedBills.push({ id: bill.id, ref: bill.ref, data: bill.data, newPaid });
+        updatedBills.push({
+            id: bill.id,
+            ref: bill.ref,
+            data: bill.data,
+            newPaid
+        });
     }
 
-    // Batch-write updated paidAmount + dueAmount to materialReceived
+    // Batch update
     const batch = db.batch();
+
     for (const b of updatedBills) {
         batch.update(b.ref, {
             paidAmount: b.newPaid,
@@ -712,134 +739,68 @@ exports.payDealerProjectPayment = async (phoneNumber, projectNo, amount, method)
             updatedAt: paymentDateISO,
         });
     }
+
     await batch.commit();
 
-    // ── ONE-TIME CLEANUP: fix stale cumulative entries from old upsert logic ──
-    // Old code stored cumulative paidAmount (e.g. 10500) as a single entry.
-    // New logic stores each payment separately (10000 + 500).
-    // If a cumulative entry exists where amount != initial paidAmount,
-    // reset it to the original paidAmount so the new entry adds correctly.
+    // ─────────────────────────────────────────────
+    // 5. EXPENSE ENTRY (UNCHANGED)
+    // ─────────────────────────────────────────────
     for (const b of updatedBills) {
         try {
-            const oldPaid = Number(b.data.paidAmount) || 0;
-            if (oldPaid === 0) continue; // no previous payment, no cleanup needed
-
-            const expSnap = await siteExpensesCollection
-                .where("receiptId", "==", b.id)
-                .where("type", "==", "materialPayment")
-                .get();
-
-            if (!expSnap.empty) {
-                const existingAmount = Number(expSnap.docs[0].data().amount) || 0;
-                // If stored amount != oldPaid, it was a cumulative entry — fix it
-                if (existingAmount !== oldPaid) {
-                    await expSnap.docs[0].ref.update({
-                        amount: oldPaid,
-                        updatedAt: paymentDateISO,
-                        _note: "corrected from cumulative to per-payment tracking",
-                    });
-                }
-            }
-        } catch (cleanupErr) {
-            console.error(`[cleanup] receipt ${b.id}:`, cleanupErr.message);
-        }
-    }
-
-
-    // KEY RULE: Each payment = one new expense entry with ONLY that payment's amount.
-    //
-    // BEFORE (wrong): upsert — updates same entry 10000 → 10500
-    //   siteExpenses: [ { amount: 10500 } ]   ← one entry, total shown as 10500
-    //
-    // AFTER (correct): insert new — each payment gets its own entry
-    //   siteExpenses: [ { amount: 10000 }, { amount: 500 } ]
-    //   totalMaterialPayment = 10000 + 500 = 10500 ✅
-    //   expense screen shows two separate rows ✅
-    //
-    // b.appliedAmount = amount applied to THIS bill in THIS payment only
-    // (not the cumulative paidAmount total)
-    for (const b of updatedBills) {
-        try {
-            // appliedAmount = what was just paid NOW (not cumulative total)
             const appliedAmount = b.newPaid - (Number(b.data.paidAmount) || 0);
             if (appliedAmount <= 0) continue;
 
-            // Always insert a NEW expense entry — never update the old one
             await siteExpensesCollection.add({
                 projectNo: b.data.projectNo,
-                amount: appliedAmount,             // ← THIS payment only (e.g. ₹500)
+                amount: appliedAmount,
                 particular: `Material Payment – ${b.data.materialName}`,
-                remark: b.data.dealerName ? `Material Payment – ${b.data.materialName} (Dealer: ${b.data.dealerName})` : `Material Payment – ${b.data.materialName}`,
+                remark: b.data.dealerName
+                    ? `Material Payment – ${b.data.materialName} (Dealer: ${b.data.dealerName})`
+                    : `Material Payment – ${b.data.materialName}`,
                 type: "materialPayment",
                 materialId: b.data.materialId,
                 dealerName: b.data.dealerName || "",
                 dealerContact: b.data.dealerContact || "",
                 receiptId: b.id,
-                date: paymentDateISO.split("T")[0],
+                date: displayDate,
                 createdAt: paymentDateISO,
-                method: paymentMethod,             // "cash" / "bank" / "UPI"
+                method: paymentMethod,
             });
-        } catch (syncErr) {
-            // Log but do NOT fail the whole payment — money is already recorded
-            console.error(`[payDealerProjectPayment] siteExpense sync failed for receipt ${b.id}:`, syncErr.message);
+        } catch (err) {
+            console.error("Expense sync failed:", err.message);
         }
     }
 
-    // Advance payments (overpayments) are blocked, so no unapplied remaining logic is needed here.
-
-    // Log this payment in dealerPayments — WITH projectNo so it's queryable later
+    // ─────────────────────────────────────────────
+    // 6. STORE PAYMENT LOG
+    // ─────────────────────────────────────────────
     await paymentsCollection.add({
         dealerContact: phoneNumber,
         projectNo,
         amountPaid: paymentAmount,
         method: paymentMethod,
+        bankId: bankId || null,
+        bankName: bankData?.accountName || null,
+        bankTransactionId: bankTransactionId || null,
         date: paymentDateISO,
         type: "Payment",
     });
 
-    // Fetch updated bills to build the full response log
-    const updatedSnap = await materialReceivedCollection
-        .where("dealerContact", "in", variations)
-        .where("projectNo", "==", projectNo)
-        .get();
-
-    const logs = [];
-    updatedSnap.forEach(doc => {
-        const d = doc.data();
-        const paid = Number(d.paidAmount) || 0;
-        logs.push({
-            receiptId: doc.id,
-            materialName: d.materialName,
-            quantity: d.quantity || 0,
-            totalAmount: Number(d.totalAmount) || 0,
-            paidAmount: paid,
-            remainingAmount: (Number(d.totalAmount) || 0) - paid,
-            status: paid >= (Number(d.totalAmount) || 0)
-                ? "Fully Paid"
-                : paid > 0 ? "Partially Paid" : "Pending",
-        });
-    });
-
-    const totalBilled = logs.reduce((s, l) => s + l.totalAmount, 0);
-    const totalPaid = logs.reduce((s, l) => s + l.paidAmount, 0);
-    const totalRemaining = totalBilled - totalPaid;
-
+    // ─────────────────────────────────────────────
+    // 7. RESPONSE
+    // ─────────────────────────────────────────────
     return {
         success: true,
-        dealerName, // Send dealer name in response back to UI
+        dealerName,
         projectNo,
         logs: [{
             amount: paymentAmount,
             date: displayDate,
             method: paymentMethod,
         }],
-        billBreakdown: logs,
         summary: {
-            totalAmount: totalBilled,
-            paidAmount: totalPaid,
-            remainingBalance: totalRemaining,
-            status: totalRemaining <= 0 ? "Fully Paid"
-                : totalPaid > 0 ? "Partially Paid" : "Pending",
-        },
+            totalPaid: paymentAmount,
+            remainingBalance: totalPending - paymentAmount
+        }
     };
 };

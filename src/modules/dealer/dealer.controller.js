@@ -64,16 +64,29 @@ exports.getDealerProjectPaymentLog = async (req, res) => {
 exports.payDealerProjectPayment = async (req, res) => {
     try {
         const { phoneNumber, projectNo } = req.params;
-        const { amount, method } = req.body;
+        const { amount, method, bankId } = req.body;
+
         const result = await dealerService.payDealerProjectPayment(
             phoneNumber,
             projectNo,
             amount,
-            method
+            method,
+            bankId   // 🔥 IMPORTANT
         );
-        res.status(200).json(result);   // already has success: true from service
+
+        res.status(200).json({
+            success: true,
+            data: result,
+            message: `Dealer payment successful${
+                method === "bank" ? " and bank balance updated" : ""
+            }`
+        });
+
     } catch (error) {
-        res.status(400).json({ success: false, error: error.message });
+        res.status(400).json({
+            success: false,
+            error: error.message
+        });
     }
 };
 
