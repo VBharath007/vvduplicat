@@ -28,7 +28,7 @@ app.use("/api/tasks", require("./routes/task.routes"));
 
 // New Modular Architecture Routes
 app.use("/api/projects", require("./modules/project/project.routes"));
-app.use("/api/banks", require("./modules/project/bank.routes"));
+app.use("/api/banks", require("./modules/bank/bank.routes"));
 app.use("/api/works", require("./modules/work/work.routes"));
 app.use("/api/materials", require("./modules/material/material.routes"));
 app.use("/api/advances", require("./modules/advance/advance.routes"));
