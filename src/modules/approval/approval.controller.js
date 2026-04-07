@@ -277,21 +277,6 @@ exports.deleteProjectType = async (req, res) => {
     }
 };
 
-exports.getNextApprovalNo = async (req, res) => {
-  try {
-    const nextNo = await approvalService.getNextApprovalNo();
-
-    res.json({
-      success: true,
-      projectNo: nextNo,
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
-  }
-};
 
 exports.getProjectTypes = async (req, res) => {
     try {
