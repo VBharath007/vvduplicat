@@ -5,7 +5,21 @@ const approvalAdvancesCollection = db.collection("approvalAdvances");
 const approvalExpensesCollection = db.collection("approvalExpenses");
 const projectTypeCollection = db.collection("projectTypeOptions");
 
+exports.getNextApprovalNo = async (req, res) => {
+  try {
+    const nextNo = await approvalService.getNextApprovalNo();
 
+    res.json({
+      success: true,
+      projectNo: nextNo,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
 exports.createApproval = async (req, res) => {
     try {
         const result = await approvalService.createApproval(req.body);
@@ -261,6 +275,22 @@ exports.deleteProjectType = async (req, res) => {
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
+};
+
+exports.getNextApprovalNo = async (req, res) => {
+  try {
+    const nextNo = await approvalService.getNextApprovalNo();
+
+    res.json({
+      success: true,
+      projectNo: nextNo,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
 };
 
 exports.getProjectTypes = async (req, res) => {

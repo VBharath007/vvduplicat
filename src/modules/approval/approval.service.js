@@ -79,6 +79,7 @@ const getApprovalCalculations = async (approvalId, totalFees) => {
     };
 };
 
+
 const ensureProjectTypeExists = async (type) => {
     if (!type) return;
     const upperType = type.toUpperCase();
@@ -119,30 +120,31 @@ exports.createApproval = async (data) => {
 };
 
 exports.getApprovals = async () => {
-    const snap = await approvalsCollection
-        .orderBy("projectNo", "asc")
-        .get();
+  const snap = await approvalsCollection.get();
 
-    const approvals = [];
+  let approvals = [];
 
-    for (const doc of snap.docs) {
-        const data = doc.data();
+  for (const doc of snap.docs) {
+    const data = doc.data();
 
-        const calcs = await getApprovalCalculations(
-            doc.id,
-            data.financialDetails?.totalFees
-        );
+    const num = parseInt(
+      (data.projectNo || "VVD0000").replace("VVD", "")
+    ) || 0;
 
-        approvals.push({
-            id: doc.id,
-            ...data,
-            calculations: calcs
-        });
-    }
+    approvals.push({
+      id: doc.id,
+      ...data,
+      _index: num,
+    });
+  }
 
-    return approvals;
+  approvals.sort((a, b) => b._index - a._index);
+
+  return approvals.map(a => {
+    delete a._index;
+    return a;
+  });
 };
-
 exports.getApprovalById = async (id) => {
     let doc = await approvalsCollection.doc(id).get();
     if (!doc.exists) {
@@ -175,7 +177,22 @@ exports.updateApproval = async (id, updateData) => {
     await docRef.update(updateData);
     return this.getApprovalById(id);
 };
+exports.getNextApprovalNo = async () => {
+  const snap = await approvalsCollection.get();
 
+  let max = 0;
+
+  snap.forEach(doc => {
+    const pNo = doc.data().projectNo || "VVD0000";
+    const num = parseInt(pNo.replace("VVD", "")) || 0;
+
+    if (num > max) max = num;
+  });
+
+  const next = max + 1;
+
+  return `VVD${String(next).padStart(4, "0")}`;
+};
 // --- Advances --- //
 exports.addAdvance = async (id, payload) => {
     let docRef = approvalsCollection.doc(id);

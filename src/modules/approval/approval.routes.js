@@ -29,6 +29,7 @@ router.post("/:id/advance", isAdmin, approvalController.addAdvance);
 router.get("/:id/advance", isAdmin, approvalController.getAdvances);
 router.put("/advance/:advanceId", isAdmin, approvalController.updateAdvance);
 router.delete("/advance/:advanceId", isAdmin, approvalController.deleteAdvance);
+router.get("/next-approval-no", isAdmin, approvalController.getNextApprovalNo);
 
 // --- Expense APIs --- //
 router.post("/:id/expense", isAdmin, approvalController.addExpense);
