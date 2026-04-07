@@ -67,3 +67,34 @@ exports.getBankTransactions = async (bankId) => {
 
   return transactions;
 };
+
+// ─────────────────────────────────────────────
+// ➕ CREATE BANK
+// ─────────────────────────────────────────────
+exports.createBank = async (data) => {
+  const {
+    bankName,
+    accountNumber,
+    openingBalance = 0,
+  } = data;
+
+  if (!bankName || !accountNumber) {
+    throw new Error("Bank name and account number are required");
+  }
+
+  const newBankRef = await banksCollection.add({
+    bankName,
+    accountNumber,
+    openingBalance: Number(openingBalance),
+    currentBalance: Number(openingBalance),
+    closingBalance: Number(openingBalance),
+    createdAt: new Date().toISOString(),
+  });
+
+  const newDoc = await newBankRef.get();
+
+  return {
+    id: newDoc.id,
+    ...newDoc.data(),
+  };
+};  

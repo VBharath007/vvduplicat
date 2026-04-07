@@ -57,3 +57,21 @@ exports.getBankTransactions = async (req, res) => {
     });
   }
 };
+
+exports.createBank = async (req, res) => {
+  try {
+    const data = req.body;
+
+    const result = await bankService.createBank(data);
+
+    res.status(201).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};

@@ -12,7 +12,7 @@ const isAdmin = [verifyToken, authorize(["admin"])];
 // GET /api/banks
 // ─────────────────────────────────────────────
 router.get("/", isAdmin, bankController.getAllBanks);
-
+router.post("/", isAdmin, bankController.createBank);
 // ─────────────────────────────────────────────
 // 🏦 SINGLE BANK
 // GET /api/banks/:bankId
