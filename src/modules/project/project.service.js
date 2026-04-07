@@ -7,6 +7,33 @@ const materialUsedCollection = db.collection("materialUsed");
 const siteExpensesCollection = db.collection("siteExpenses");
 const advancesCollection = db.collection("advances");
 
+const safeDelete = async (collectionName, projectNo) => {
+  try {
+    const collectionRef = db.collection(collectionName);
+
+    const snapshot = await collectionRef
+      .where("projectNo", "==", projectNo)
+      .get();
+
+    if (snapshot.empty) {
+      console.log(`No ${collectionName} found — skipping`);
+      return 0;
+    }
+
+    const batch = db.batch();
+    snapshot.docs.forEach(doc => batch.delete(doc.ref));
+
+    await batch.commit();
+
+    console.log(`Deleted ${snapshot.size} from ${collectionName}`);
+    return snapshot.size;
+
+  } catch (err) {
+    console.log(`Skipping ${collectionName}`);
+    return 0;
+  }
+};
+
 // ─── Shared Financial Helper ──────────────────────────────────────────────────
 //
 //  SINGLE SOURCE OF TRUTH — used by getProjectSummary AND getFinancialHistory.
