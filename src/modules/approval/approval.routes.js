@@ -7,13 +7,14 @@ const { authorize } = require("../../middleware/role.middleware");
 const isAdmin = [verifyToken, authorize(["admin"])];
 
 // --- Project Type Options --- //
+router.get("/summary/date-range", isAdmin, approvalController.getSummaryByDateRange);
 router.post("/project-type", isAdmin, approvalController.addProjectType);
 router.get("/project-type", approvalController.getProjectTypes);
 router.put("/project-type/:id/confirm", isAdmin, approvalController.confirmProjectType);
 router.delete("/project-type/:id", isAdmin, approvalController.deleteProjectType);
 
 // --- Date Range Summary (MUST be before /:id routes) --- //
-router.get("/summary/date-range", isAdmin, approvalController.getSummaryByDateRange);
+router.get("/next-approval-no", isAdmin, approvalController.getNextApprovalNo);
 
 // --- Approval Management --- //
 router.post("/", isAdmin, approvalController.createApproval);
@@ -29,7 +30,7 @@ router.post("/:id/advance", isAdmin, approvalController.addAdvance);
 router.get("/:id/advance", isAdmin, approvalController.getAdvances);
 router.put("/advance/:advanceId", isAdmin, approvalController.updateAdvance);
 router.delete("/advance/:advanceId", isAdmin, approvalController.deleteAdvance);
-router.get("/next-approval-no", isAdmin, approvalController.getNextApprovalNo);
+
 
 // --- Expense APIs --- //
 router.post("/:id/expense", isAdmin, approvalController.addExpense);
