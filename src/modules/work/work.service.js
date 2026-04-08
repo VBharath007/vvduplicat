@@ -281,6 +281,9 @@ exports.getWorkById = async (workId, projectNo = null) => {
 };
 
 
+
+
+
 exports.updateWork = async (workId, updateData) => {
     const docRef = worksCollection.doc(workId);
     const doc = await docRef.get();
@@ -642,4 +645,56 @@ exports.getWorksByLabour = async (labourId) => {
         projects: validProjects,
         totalWorks: validProjects.reduce((sum, p) => sum + p.totalWorks, 0),
     };
+};
+
+
+
+exports.updateWorkDate = async (projectNo, workId, newDate) => {
+    if (!projectNo) throw new Error("projectNo is required");
+    if (!workId) throw new Error("workId is required");
+    if (!newDate) throw new Error("date is required");
+
+    // ── Manual DD-MM-YYYY validation (no dayjs dependency) ───────────────────
+    const dateRegex = /^(\d{2})-(\d{2})-(\d{4})$/;
+    const match = newDate.match(dateRegex);
+    if (!match) {
+        throw new Error("Invalid date format. Use DD-MM-YYYY (e.g., 05-04-2026)");
+    }
+
+    const [, dd, mm, yyyy] = match;
+    const day = parseInt(dd, 10);
+    const month = parseInt(mm, 10);
+    const year = parseInt(yyyy, 10);
+
+    // Validate actual calendar date
+    const testDate = new Date(year, month - 1, day);
+    if (
+        testDate.getDate() !== day ||
+        testDate.getMonth() !== month - 1 ||
+        testDate.getFullYear() !== year
+    ) {
+        throw new Error("Invalid calendar date");
+    }
+
+    const formattedDate = `${dd}-${mm}-${yyyy}`;
+
+    // ── Fetch work doc ───────────────────────────────────────────────────────
+    const docRef = worksCollection.doc(workId);
+    const doc = await docRef.get();
+
+    if (!doc.exists) {
+        throw new Error(`Work '${workId}' not found`);
+    }
+
+    if (doc.data().projectNo !== projectNo) {
+        throw new Error(`Work '${workId}' does not belong to project '${projectNo}'`);
+    }
+
+    await docRef.update({
+        date: formattedDate,
+        updatedAt: now(),
+    });
+
+    const updated = await docRef.get();
+    return { workId: updated.id, ...updated.data() };
 };

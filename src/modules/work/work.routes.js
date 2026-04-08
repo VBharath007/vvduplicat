@@ -36,4 +36,6 @@ router.get("/:workId", isAdmin, workController.getWorkById);
 router.put("/:workId", isAdmin, workController.updateWork);
 router.delete("/:workId", isAdmin, workController.deleteWork);
 
+router.put("/:projectNo/:workId", verifyToken, workController.updateWorkDate);
+
 module.exports = router;

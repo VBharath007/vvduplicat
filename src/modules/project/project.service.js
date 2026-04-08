@@ -178,9 +178,34 @@ exports.createProject = async (projectData) => {
     const doc = await docRef.get();
     if (doc.exists) throw new Error("Project with this projectNo already exists");
 
-    projectData.createdAt = new Date().toISOString();
+    projectData.createdAt = projectData.createdAt || new Date().toISOString();
+
+    // ── Save project as-is (paymentDetails structure preserved) ──────────────
     await docRef.set(projectData);
-    return { ...projectData };
+
+    let advanceRecord = null;
+
+    // ── Extract advance from paymentDetails.advancedPaid ─────────────────────
+    const advancedPaid = Number(projectData?.paymentDetails?.advancedPaid || 0);
+
+    if (advancedPaid > 0) {
+        const advanceData = {
+            projectNo: projectData.projectNo,
+            amountReceived: advancedPaid,
+            pastAdvance: 0,
+            remark: "Initial advance on project creation",
+            date: projectData.startDate || new Date().toISOString().split("T")[0],
+            createdAt: new Date().toISOString(),
+        };
+
+        const advanceRef = await advancesCollection.add(advanceData);
+        advanceRecord = { advanceId: advanceRef.id, ...advanceData };
+    }
+
+    return {
+        ...projectData,
+        advance: advanceRecord,
+    };
 };
 
 exports.getAllProjects = async () => {
@@ -211,91 +236,92 @@ exports.updateProject = async (projectNo, updateData) => {
 };
 
 exports.deleteProject = async (projectNo) => {
-    const docRef = projectsCollection.doc(projectNo);
+    const docRef = db.collection("projects").doc(projectNo);
     const doc = await docRef.get();
 
-    // ── Check project exists ─────────────────────────────────────────────────
     if (!doc.exists) {
         throw new Error(`Project '${projectNo}' not found`);
     }
 
-    // ── Helper: delete all docs in a query ───────────────────────────────────
-    const deleteQuery = async (query, label) => {
-        const snap = await query.get();
+    const BATCH_LIMIT = 450;
 
-        if (snap.empty) {
-            console.log(`No ${label} found for ${projectNo} — skipping`);
-            return 0;
-        } else {
-            const batch = db.batch();
-            snap.docs.forEach(d => batch.delete(d.ref));
-            await batch.commit();
-            console.log(`Deleted ${snap.size} ${label} for ${projectNo}`);
-            return snap.size;
+    // ── Helper: chunked, fault-tolerant delete ───────────────────────────────
+    const deleteQuery = async (collectionName) => {
+        try {
+            const snap = await db
+                .collection(collectionName)
+                .where("projectNo", "==", projectNo)
+                .get();
+
+            if (snap.empty) {
+                console.log(`[${projectNo}] No ${collectionName} found — skipping`);
+                return { label: collectionName, deleted: 0, status: "skipped" };
+            }
+
+            const docs = snap.docs;
+            let deletedCount = 0;
+
+            // Chunk into batches of 450 (Firestore hard limit = 500)
+            for (let i = 0; i < docs.length; i += BATCH_LIMIT) {
+                const batch = db.batch();
+                const chunk = docs.slice(i, i + BATCH_LIMIT);
+                chunk.forEach(d => batch.delete(d.ref));
+                await batch.commit();
+                deletedCount += chunk.length;
+            }
+
+            console.log(`[${projectNo}] Deleted ${deletedCount} ${collectionName}`);
+            return { label: collectionName, deleted: deletedCount, status: "success" };
+        } catch (err) {
+            // Oru collection fail aanalum meethi ellame continue aagum
+            console.error(`[${projectNo}] Failed to delete ${collectionName}:`, err.message);
+            return { label: collectionName, deleted: 0, status: "failed", error: err.message };
         }
     };
 
-    // ── Cascade delete — all project-related data ────────────────────────────
-    let works = 0, received = 0, used = 0, expenses = 0;
-    let advances = 0, payments = 0, required = 0, stockDeleted = 0;
+    // ── All project-related collections (Firestore collection names) ─────────
+    const collections = [
+        "works",
+        "materialReceived",
+        "materialUsed",
+        "siteExpenses",
+        "advances",
+        "labourPayments",
+        "materialRequired",
+        "stock"
+    ];
 
-    // Works
-    works = await deleteQuery(
-        worksCollection.where("projectNo", "==", projectNo), "works"
+    // ── Parallel execution — ovvoru deletion-um independent ──────────────────
+    const results = await Promise.all(
+        collections.map(name => deleteQuery(name))
     );
 
-    // Material Received
-    received = await deleteQuery(
-        materialReceivedCollection.where("projectNo", "==", projectNo), "materialReceived"
-    );
+    // ── Build response summary ───────────────────────────────────────────────
+    const deleted = {};
+    const failed = [];
 
-    // Material Used
-    used = await deleteQuery(
-        materialUsedCollection.where("projectNo", "==", projectNo), "materialUsed"
-    );
-
-    // Site Expenses
-    expenses = await deleteQuery(
-        siteExpensesCollection.where("projectNo", "==", projectNo), "siteExpenses"
-    );
-
-    // Advances
-    advances = await deleteQuery(
-        advancesCollection.where("projectNo", "==", projectNo), "advances"
-    );
-
-    // Labour Payments
-    payments = await deleteQuery(
-        labourPaymentsCollection.where("projectNo", "==", projectNo), "labourPayments"
-    );
-
-    // Material Required
-    required = await deleteQuery(
-        materialRequiredCollection.where("projectNo", "==", projectNo), "materialRequired"
-    );
-
-    // Stock
-    stockDeleted = await deleteQuery(
-        stockCollection.where("projectNo", "==", projectNo), "stock"
-    );
-
-    // ── Finally delete the project itself ────────────────────────────────────
-    await docRef.delete();
-    console.log(`Project '${projectNo}' deleted successfully`);
-
-    // ── Response ─────────────────────────────────────────────────────────────
-    return {
-        message: `Project '${projectNo}' and all related data deleted successfully`,
-        deleted: {
-            works,
-            materialReceived: received,
-            materialUsed: used,
-            siteExpenses: expenses,
-            advances,
-            labourPayments: payments,
-            materialRequired: required,
-            stock: stockDeleted,
+    results.forEach(r => {
+        deleted[r.label] = r.deleted;
+        if (r.status === "failed") {
+            failed.push({ module: r.label, error: r.error });
         }
+    });
+
+    // ── Finally delete the project document itself ──────────────────────────
+    try {
+        await docRef.delete();
+        console.log(`[${projectNo}] Project document deleted successfully`);
+    } catch (err) {
+        console.error(`[${projectNo}] Failed to delete project doc:`, err.message);
+        failed.push({ module: "project", error: err.message });
+    }
+
+    return {
+        message: failed.length
+            ? `Project '${projectNo}' deleted with ${failed.length} module failure(s)`
+            : `Project '${projectNo}' and all related data deleted successfully`,
+        deleted,
+        failed,
     };
 };
 

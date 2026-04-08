@@ -93,31 +93,18 @@
         }
     };
 
-    exports.deleteProject = async (projectNo) => {
-  const collections = [
-    "works",
-    "materialReceived",
-    "materialUsed",
-    "siteExpenses",
-    "advances",
-    "labourPayments",
-    "materialRequired",
-    "stock"
-  ];
-
-  let deletedCounts = {};
-
-  for (let name of collections) {
-    deletedCounts[name] = await safeDelete(name, projectNo);
-  }
-
-  // delete main project
-  await db.collection("projects").doc(projectNo).delete();
-
-  return {
-    message: `Project ${projectNo} deleted successfully`,
-    deleted: deletedCounts,
-  };
+   exports.deleteProject = async (req, res) => {
+    try {
+        const { projectNo } = req.params;
+        const result = await projectService.deleteProject(projectNo);
+        res.status(200).json(result);
+    } catch (err) {
+        console.error("Delete project error:", err);
+        res.status(500).json({ 
+            success: false, 
+            message: err.message 
+        });
+    }
 };
    
 

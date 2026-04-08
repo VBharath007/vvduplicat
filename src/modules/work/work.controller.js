@@ -357,3 +357,30 @@ exports.getWorksByLabour = async (req, res) => {
         res.status(500).json({ success: false, message: error.message });
     }
 };
+
+
+
+
+
+
+
+
+exports.updateWorkDate = async (req, res) => {
+    try {
+        const { projectNo, workId } = req.params;
+        const { date } = req.body;
+
+        const result = await workService.updateWorkDate(projectNo, workId, date);
+        res.status(200).json({
+            success: true,
+            message: "Work date updated successfully",
+            data: result,
+        });
+    } catch (err) {
+        console.error("Update work date error:", err);
+        res.status(400).json({
+            success: false,
+            message: err.message,
+        });
+    }
+};
