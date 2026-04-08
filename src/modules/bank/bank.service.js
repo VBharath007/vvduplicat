@@ -98,3 +98,41 @@ exports.createBank = async (data) => {
     ...newDoc.data(),
   };
 };  
+
+
+
+// ─────────────────────────────────────────────
+// 📊 GET ALL TRANSACTIONS (ALL BANKS)
+// ─────────────────────────────────────────────
+exports.getAllTransactions = async () => {
+  const snapshot = await banksCollection.get();
+
+  let allTransactions = [];
+
+  for (const doc of snapshot.docs) {
+    const bankData = doc.data();
+    const bankId = doc.id;
+
+    const txSnapshot = await banksCollection
+      .doc(bankId)
+      .collection("transactions")
+      .orderBy("createdAt", "desc")
+      .get();
+
+    txSnapshot.forEach((txDoc) => {
+      allTransactions.push({
+        id: txDoc.id,
+        bankId: bankId,
+        bankName: bankData.bankName, // 🔥 IMPORTANT
+        ...txDoc.data(),
+      });
+    });
+  }
+
+  // Optional: sort globally
+  allTransactions.sort(
+    (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+  );
+
+  return allTransactions;
+};
