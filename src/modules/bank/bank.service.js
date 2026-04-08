@@ -101,38 +101,71 @@ exports.createBank = async (data) => {
 
 
 
-// ─────────────────────────────────────────────
-// 📊 GET ALL TRANSACTIONS (ALL BANKS)
-// ─────────────────────────────────────────────
-exports.getAllTransactions = async () => {
-  const snapshot = await banksCollection.get();
+exports.getGlobalTransactions = async () => {
+    const snapshot = await banksCollection.get();
 
-  let allTransactions = [];
+    let allTransactions = [];
+    let totalCurrentBalance = 0;
 
-  for (const doc of snapshot.docs) {
-    const bankData = doc.data();
-    const bankId = doc.id;
+    // ── 1. Fetch all banks + their transactions ──────────────────────────────
+    for (const doc of snapshot.docs) {
+        const bankData = doc.data();
+        const bankId = doc.id;
 
-    const txSnapshot = await banksCollection
-      .doc(bankId)
-      .collection("transactions")
-      .orderBy("createdAt", "desc")
-      .get();
+        // Sum of all banks' current balance = combined total
+        totalCurrentBalance += Number(bankData.currentBalance || 0);
 
-    txSnapshot.forEach((txDoc) => {
-      allTransactions.push({
-        id: txDoc.id,
-        bankId: bankId,
-        bankName: bankData.bankName, // 🔥 IMPORTANT
-        ...txDoc.data(),
-      });
+        const txSnapshot = await banksCollection
+            .doc(bankId)
+            .collection("transactions")
+            .get();
+
+        txSnapshot.forEach((txDoc) => {
+            const tx = txDoc.data();
+            allTransactions.push({
+                bankName: bankData.bankName,
+                type: tx.type,
+                amount: Number(tx.amount || 0),
+                remark: tx.remark || "",
+                date: tx.date || tx.createdAt,
+                createdAt: tx.createdAt,
+            });
+        });
+    }
+
+    // ── 2. Sort NEWEST → OLDEST ──────────────────────────────────────────────
+    allTransactions.sort(
+        (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+    );
+
+    // ── 3. Walk backwards from COMBINED total balance ────────────────────────
+    // Top row = current combined balance across all banks
+    // Each older row = balance BEFORE the newer transaction was applied
+    let runningBalance = totalCurrentBalance;
+
+    const finalList = allTransactions.map((tx) => {
+        let credit = 0;
+        let debit = 0;
+        const balanceAtThisRow = runningBalance; // show combined balance AFTER this tx
+
+        if (tx.type === "CREDIT") {
+            credit = tx.amount;
+            runningBalance -= tx.amount; // reverse for next (older) row
+        } else {
+            debit = tx.amount;
+            runningBalance += tx.amount; // reverse for next (older) row
+        }
+
+        return {
+            date: tx.date,
+            bankName: tx.bankName,
+            remark: tx.remark,
+            credit,
+            debit,
+            balance: balanceAtThisRow, // combined balance across ALL banks
+            createdAt: tx.createdAt,
+        };
     });
-  }
 
-  // Optional: sort globally
-  allTransactions.sort(
-    (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
-  );
-
-  return allTransactions;
+    return finalList;
 };

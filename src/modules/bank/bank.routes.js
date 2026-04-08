@@ -26,10 +26,6 @@ router.get("/:bankId", isAdmin, bankController.getBankById);
 router.get("/:bankId/transactions", isAdmin, bankController.getBankTransactions);
 
 
-router.get(
-  "/transactions/all",
-  isAdmin,
-  bankController.getAllTransactions
-);
+router.get("/transactions/global", isAdmin, bankController.getGlobalTransactions);
 
 module.exports = router;

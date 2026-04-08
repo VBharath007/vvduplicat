@@ -82,9 +82,9 @@ exports.createBank = async (req, res) => {
 // ─────────────────────────────────────────────
 // 📊 GET ALL TRANSACTIONS (ALL BANKS)
 // ─────────────────────────────────────────────
-exports.getAllTransactions = async (req, res) => {
+exports.getGlobalTransactions = async (req, res) => {
   try {
-    const result = await bankService.getAllTransactions();
+    const result = await bankService.getGlobalTransactions();
 
     res.status(200).json({
       success: true,
