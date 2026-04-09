@@ -209,10 +209,30 @@ exports.createProject = async (projectData) => {
 };
 
 exports.getAllProjects = async () => {
-    const snapshot = await projectsCollection.get();
-    const projects = [];
-    snapshot.forEach(doc => projects.push(doc.data()));
-    return projects;
+  // ✅ Parallel fetch — projects + all images same time
+  const [projectSnap, imageSnap] = await Promise.all([
+    projectsCollection.get(),
+    db.collection("projectImages").get(),
+  ]);
+
+  // Build imageMap: { projectNo: [img1, img2, ...] }
+  const imageMap = {};
+  imageSnap.forEach((doc) => {
+    const data = doc.data();
+    delete data.storagePath;
+    if (!imageMap[data.projectNo]) imageMap[data.projectNo] = [];
+    imageMap[data.projectNo].push(data);
+  });
+
+  // Attach images to each project
+  const projects = [];
+  projectSnap.forEach((doc) => {
+    const project = doc.data();
+    project.images = imageMap[project.projectNo] || [];
+    projects.push(project);
+  });
+
+  return projects;
 };
 
 exports.getProjectByNo = async (projectNo) => {

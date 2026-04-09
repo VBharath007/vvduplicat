@@ -24,7 +24,7 @@ app.use("/api/employee", require("./routes/employee.routes"));
 app.use("/api/admin", require("./routes/admin.routes"));
 app.use("/api/addadmin", require("./routes/addadmin.routes"));
 app.use("/api/mould", require("./modules/mould/mould.routes"));
-app.use("/api/tasks", require("./routes/task.routes"));
+
 
 // New Modular Architecture Routes
 app.use("/api/projects", require("./modules/project/project.routes"));
