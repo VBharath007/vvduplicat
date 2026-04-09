@@ -4,16 +4,41 @@ const COLLECTION = "tasks";
 const tasksCol = () => db.collection(COLLECTION);
 const taskRef = (id) => db.collection(COLLECTION).doc(id);
 
-const toDateString = (date) => date.toISOString().split("T")[0];
-const todayString = () => toDateString(new Date());
+// ── Date helpers (DD-MM-YYYY format throughout) ───────────────────────────────
+const todayFormatted = () => {
+  const d = new Date();
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  return `${dd}-${mm}-${d.getFullYear()}`; // "09-04-2026"
+};
+
+const tomorrowFormatted = () => {
+  const d = new Date(Date.now() + 86400000);
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  return `${dd}-${mm}-${d.getFullYear()}`;
+};
+
+// Parse DD-MM-YYYY → sortable number YYYYMMDD
+const toSortable = (ddmmyyyy) => {
+  if (!ddmmyyyy) return 0;
+  const [dd, mm, yyyy] = ddmmyyyy.split("-");
+  return Number(`${yyyy}${mm}${dd}`);
+};
 
 const buildDueTimestamp = (dueDate, dueTime) => {
   if (!dueDate) return null;
-  return dueTime ? `${dueDate}T${dueTime}:00` : `${dueDate}T00:00:00`;
+  // dueDate is DD-MM-YYYY, convert for timestamp string
+  const [dd, mm, yyyy] = dueDate.split("-");
+  return dueTime
+    ? `${yyyy}-${mm}-${dd}T${dueTime}:00`
+    : `${yyyy}-${mm}-${dd}T00:00:00`;
 };
 
-const formatDisplayDate = (dateStr) => {
-  const d = new Date(dateStr + "T00:00:00");
+const formatDisplayDate = (ddmmyyyy) => {
+  if (!ddmmyyyy) return "";
+  const [dd, mm, yyyy] = ddmmyyyy.split("-");
+  const d = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
   return d.toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short" });
 };
 
@@ -24,10 +49,10 @@ const createTask = async (data) => {
   const payload = {
     title: data.title,
     notes: data.notes || null,
-    dueDate: data.dueDate || null,
+    dueDate: data.dueDate || null,       // store as DD-MM-YYYY
     dueTime: data.dueTime || null,
     dueTimestamp: buildDueTimestamp(data.dueDate, data.dueTime),
-    hasDueDate: !!data.dueDate,           // ✅ boolean flag — fast filtering
+    hasDueDate: !!data.dueDate,
     listId: data.listId || "default",
     listName: data.listName || "Reminders",
     flagged: data.flagged ?? false,
@@ -81,13 +106,13 @@ const completeTask = async (id, completed) => {
   return { id: snap.id, ...snap.data() };
 };
 
-// ── Smart Lists (single query + JS filter/sort) ───────────────────────────────
-
-// fetch all incomplete once — reuse across functions
+// ── Shared fetch ──────────────────────────────────────────────────────────────
 const fetchAllIncomplete = async () => {
   const snap = await tasksCol().where("completed", "==", false).get();
   return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 };
+
+// ── Smart Lists ───────────────────────────────────────────────────────────────
 
 const getAll = async () => {
   const tasks = await fetchAllIncomplete();
@@ -95,7 +120,7 @@ const getAll = async () => {
 };
 
 const getToday = async () => {
-  const today = todayString();
+  const today = todayFormatted(); // "09-04-2026"
   const tasks = await fetchAllIncomplete();
   return tasks
     .filter((t) => t.dueDate === today)
@@ -106,14 +131,11 @@ const getScheduled = async () => {
   const tasks = await fetchAllIncomplete();
   const withDate = tasks.filter((t) => t.hasDueDate && t.dueDate);
 
-  withDate.sort((a, b) => {
-    const d = a.dueDate.localeCompare(b.dueDate);
-    if (d !== 0) return d;
-    return (a.dueTimestamp || "").localeCompare(b.dueTimestamp || "");
-  });
+  // Sort by date using sortable number
+  withDate.sort((a, b) => toSortable(a.dueDate) - toSortable(b.dueDate));
 
-  const today = todayString();
-  const tomorrow = toDateString(new Date(Date.now() + 86400000));
+  const today = todayFormatted();
+  const tomorrow = tomorrowFormatted();
   const grouped = {};
 
   for (const task of withDate) {
@@ -123,7 +145,7 @@ const getScheduled = async () => {
   }
 
   return Object.entries(grouped)
-    .sort(([a], [b]) => a.localeCompare(b))
+    .sort(([a], [b]) => toSortable(a) - toSortable(b))
     .map(([date, tasks]) => ({
       date,
       label: date === today ? "Today" : date === tomorrow ? "Tomorrow" : formatDisplayDate(date),
@@ -142,12 +164,19 @@ const getCompleted = async () => {
 
   tasks.sort((a, b) => (b.completedAt || "").localeCompare(a.completedAt || ""));
 
-  const today = todayString();
-  const tomorrow = toDateString(new Date(Date.now() + 86400000));
+  const today = todayFormatted();
+  const tomorrow = tomorrowFormatted();
   const grouped = {};
 
   for (const task of tasks) {
-    const dateKey = task.completedAt ? task.completedAt.split("T")[0] : "Unknown";
+    // completedAt is ISO string "2026-04-09T..." → convert to DD-MM-YYYY
+    let dateKey = "Unknown";
+    if (task.completedAt) {
+      const dt = new Date(task.completedAt);
+      const dd = String(dt.getDate()).padStart(2, "0");
+      const mm = String(dt.getMonth() + 1).padStart(2, "0");
+      dateKey = `${dd}-${mm}-${dt.getFullYear()}`;
+    }
     const label = dateKey === today ? "Today" : dateKey === tomorrow ? "Tomorrow" : formatDisplayDate(dateKey);
     if (!grouped[label]) grouped[label] = [];
     grouped[label].push(task);
@@ -160,9 +189,8 @@ const getByList = async (listId) => {
   return tasks.filter((t) => t.listId === listId);
 };
 
-// ── Smart Counts (2 queries only) ────────────────────────────────────────────
 const getSmartCounts = async () => {
-  const today = todayString();
+  const today = todayFormatted(); // "09-04-2026"
 
   const [incompleteSnap, completedSnap] = await Promise.all([
     tasksCol().where("completed", "==", false).get(),
