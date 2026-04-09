@@ -13,12 +13,14 @@ const isAdmin = [verifyToken, authorize(["admin"])];
 // GET    /api/payments/detail/:paymentId        → single payment
 // PUT    /api/payments/:paymentId               → edit payment
 // DELETE /api/payments/:paymentId               → delete payment
+// /:projectNo/:labourId → /:labourId/:projectNo 
 
-// IMPORTANT: /detail/:paymentId must come before /:labourId to avoid conflict
-router.post("/:projectNo/:labourId", isAdmin, paymentController.createPayment);
-router.get("/detail/:paymentId", isAdmin, paymentController.getPaymentById);
-router.get("/:projectNo/:labourId", isAdmin, paymentController.getPayments);
+// CORRECT ORDER:
+router.get("/detail/:paymentId", isAdmin, paymentController.getPaymentById); // ← TOP-ல் வேணும்
+router.get("/:labourId/:projectNo", isAdmin, paymentController.getPayments);
 router.get("/:labourId", isAdmin, paymentController.getPayments);
+
+router.post("/:labourId/:projectNo", isAdmin, paymentController.createPayment);
 router.put("/:paymentId", isAdmin, paymentController.updatePayment);
 router.delete("/:paymentId", isAdmin, paymentController.deletePayment);
 
