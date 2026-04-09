@@ -1,0 +1,9 @@
+{
+  "indexes": [
+    { "collectionGroup": "tasks", "fields": [{"fieldPath":"userId","order":"ASCENDING"},{"fieldPath":"dueDate","order":"ASCENDING"},{"fieldPath":"completed","order":"ASCENDING"}] },
+    { "collectionGroup": "tasks", "fields": [{"fieldPath":"userId","order":"ASCENDING"},{"fieldPath":"dueDate","order":"ASCENDING"},{"fieldPath":"dueTimestamp","order":"ASCENDING"}] },
+    { "collectionGroup": "tasks", "fields": [{"fieldPath":"userId","order":"ASCENDING"},{"fieldPath":"flagged","order":"ASCENDING"},{"fieldPath":"completed","order":"ASCENDING"},{"fieldPath":"createdAt","order":"DESCENDING"}] },
+    { "collectionGroup": "tasks", "fields": [{"fieldPath":"userId","order":"ASCENDING"},{"fieldPath":"completed","order":"ASCENDING"},{"fieldPath":"completedAt","order":"DESCENDING"}] },
+    { "collectionGroup": "tasks", "fields": [{"fieldPath":"listId","order":"ASCENDING"},{"fieldPath":"userId","order":"ASCENDING"},{"fieldPath":"completed","order":"ASCENDING"},{"fieldPath":"createdAt","order":"DESCENDING"}] }
+  ]
+}

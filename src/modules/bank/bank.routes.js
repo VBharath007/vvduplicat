@@ -28,4 +28,8 @@ router.get("/:bankId/transactions", isAdmin, bankController.getBankTransactions)
 
 router.get("/transactions/global", isAdmin, bankController.getGlobalTransactions);
 
+router.put("/:bankId",                     isAdmin,     bankController.updateBank);
+// router.post("/:bankId/transactions",      isAdmin,     bankController.addTransaction);
+router.put("/:bankId/transactions/:txId",       isAdmin,     bankController.updateTransaction);
+
 module.exports = router;

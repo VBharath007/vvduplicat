@@ -72,6 +72,10 @@ exports.getBankTransactions = async (bankId) => {
 // ➕ CREATE BANK
 // ─────────────────────────────────────────────
 exports.createBank = async (data) => {
+  if (!data) {
+    throw new Error("Request data is required");
+  }
+
   const {
     bankName,
     accountNumber,
@@ -168,4 +172,135 @@ exports.getGlobalTransactions = async () => {
     });
 
     return finalList;
+};
+
+
+
+// ─────────────────────────────────────────────
+// ✏️ UPDATE BANK DETAILS
+// ─────────────────────────────────────────────
+exports.updateBank = async (bankId, data) => {
+  const ref = banksCollection.doc(bankId);
+  const doc = await ref.get();
+  if (!doc.exists) throw new Error("Bank not found");
+
+  const { bankName, accountNumber, openingBalance } = data;
+
+  const updates = {};
+  if (bankName) updates.bankName = bankName;
+  if (accountNumber) updates.accountNumber = accountNumber;
+
+  // ✅ CORRECT — just set whatever value sent
+  if (openingBalance !== undefined) {
+    updates.openingBalance = Number(openingBalance);
+    updates.currentBalance = Number(openingBalance);  // direct replace
+    updates.closingBalance = Number(openingBalance);
+  }
+
+  updates.updatedAt = new Date().toISOString();
+
+  await ref.update(updates);
+  const updated = await ref.get();
+  return { id: updated.id, ...updated.data() };
+};
+
+// ─────────────────────────────────────────────
+// 💳 ADD TRANSACTION (CREDIT / DEBIT)
+// ─────────────────────────────────────────────
+// exports.addTransaction = async (bankId, data) => {
+//   const { type, amount, remark, date } = data;
+
+//   if (!["CREDIT", "DEBIT"].includes(type)) throw new Error("type must be CREDIT or DEBIT");
+//   if (!amount || isNaN(amount)) throw new Error("Valid amount is required");
+
+//   const ref = banksCollection.doc(bankId);
+//   const doc = await ref.get();
+//   if (!doc.exists) throw new Error("Bank not found");
+
+//   const existing = doc.data();
+//   const current = Number(existing.currentBalance || 0);
+//   const txAmount = Number(amount);
+
+//   if (type === "DEBIT" && txAmount > current) {
+//     throw new Error("Insufficient balance");
+//   }
+
+//   const newBalance =
+//     type === "CREDIT" ? current + txAmount : current - txAmount;
+
+//   const now = new Date().toISOString();
+
+//   // Add transaction subcollection
+//   const txRef = await ref.collection("transactions").add({
+//     type,
+//     amount: txAmount,
+//     remark: remark || "",
+//     date: date || now,
+//     createdAt: now,
+//   });
+
+//   // Update bank balance
+//   await ref.update({
+//     currentBalance: newBalance,
+//     closingBalance: newBalance,
+//     updatedAt: now,
+//   });
+
+//   return {
+//     transactionId: txRef.id,
+//     type,
+//     amount: txAmount,
+//     remark: remark || "",
+//     previousBalance: current,
+//     newBalance,
+//   };
+// };
+
+// ─────────────────────────────────────────────
+// ✏️ UPDATE TRANSACTION
+// ─────────────────────────────────────────────
+exports.updateTransaction = async (bankId, txId, data) => {
+  const bankRef = banksCollection.doc(bankId);
+  const bankDoc = await bankRef.get();
+  if (!bankDoc.exists) throw new Error("Bank not found");
+
+  const txRef = bankRef.collection("transactions").doc(txId);
+  const txDoc = await txRef.get();
+  if (!txDoc.exists) throw new Error("Transaction not found");
+
+  const oldTx = txDoc.data();
+  const bankData = bankDoc.data();
+
+  const oldAmount = Number(oldTx.amount || 0);
+  const newAmount = data.amount !== undefined ? Number(data.amount) : oldAmount;
+  const type = oldTx.type; // type cannot be changed
+
+  // Reverse old, apply new
+  let balance = Number(bankData.currentBalance || 0);
+  balance = type === "CREDIT" ? balance - oldAmount : balance + oldAmount;
+  balance = type === "CREDIT" ? balance + newAmount : balance - newAmount;
+
+  if (balance < 0) throw new Error("Insufficient balance after update");
+
+  const now = new Date().toISOString();
+
+  await txRef.update({
+    amount: newAmount,
+    remark: data.remark ?? oldTx.remark,
+    date: data.date ?? oldTx.date,
+    updatedAt: now,
+  });
+
+  await bankRef.update({
+    currentBalance: balance,
+    closingBalance: balance,
+    updatedAt: now,
+  });
+
+  return {
+    transactionId: txId,
+    type,
+    newAmount,
+    newBalance: balance,
+  };
 };

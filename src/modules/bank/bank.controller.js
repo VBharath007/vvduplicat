@@ -63,6 +63,13 @@ exports.createBank = async (req, res) => {
   try {
     const data = req.body;
 
+    if (!data) {
+      return res.status(400).json({
+        success: false,
+        message: "Request body is missing"
+      });
+    }
+
     const result = await bankService.createBank(data);
 
     res.status(201).json({
@@ -95,5 +102,39 @@ exports.getGlobalTransactions = async (req, res) => {
       success: false,
       message: error.message,
     });
+  }
+};
+
+
+
+
+exports.updateBank = async (req, res, next) => {
+  try {
+    const data = await bankService.updateBank(req.params.bankId, req.body);
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// exports.addTransaction = async (req, res, next) => {
+//   try {
+//     const data = await bankService.addTransaction(req.params.bankId, req.body);
+//     res.status(201).json({ success: true, data });
+//   } catch (err) {
+//     next(err);
+//   }
+// };
+
+exports.updateTransaction = async (req, res, next) => {
+  try {
+    const data = await bankService.updateTransaction(
+      req.params.bankId,
+      req.params.txId,
+      req.body
+    );
+    res.json({ success: true, data });
+  } catch (err) {
+    next(err);
   }
 };
