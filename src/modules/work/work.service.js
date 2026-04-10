@@ -181,8 +181,6 @@ exports.createWork = async (workData) => {
     const { projectNo, work, tomorrowWork } = workData;
     if (!projectNo) throw new Error("projectNo is required");
 
-    // work field empty-aa irundha create panna vendam
-    // Flutter "Save Details" press panna panna empty work create aagaathu
     if (!work || !work.trim()) {
         throw new Error("work (work name) is required. Please enter a work name before saving.");
     }
@@ -197,10 +195,9 @@ exports.createWork = async (workData) => {
         tomorrowWork: (tomorrowWork || "").trim(),
         date: workDate,
         createdAt: now(),
-        labourDetails: {} // Standardize by ensuring new entries have this property
+        labourDetails: {}
     };
 
-    // ── UPSERT: unique key = projectNo + work ──
     const existingSnapshot = await worksCollection
         .where("projectNo", "==", projectNo)
         .where("work", "==", name)
@@ -211,7 +208,6 @@ exports.createWork = async (workData) => {
         const existingDoc = existingSnapshot.docs[0];
         const updatePayload = { ...payload };
         delete updatePayload.createdAt;
-        // Don't overwrite existing labourDetails on upsert if it already has one!
         if (existingDoc.data().labourDetails !== undefined) {
             delete updatePayload.labourDetails;
         }
@@ -219,11 +215,15 @@ exports.createWork = async (workData) => {
 
         await existingDoc.ref.update(updatePayload);
         const updated = await existingDoc.ref.get();
-        return { workId: updated.id, ...updated.data() };
+        const result = { workId: updated.id, ...updated.data() };
+        delete result.labourDetails;  // ⚠️ REMOVE FROM RESPONSE
+        return result;
     }
 
     const docRef = await worksCollection.add(payload);
-    return { workId: docRef.id, ...payload };
+    const result = { workId: docRef.id, ...payload };
+    delete result.labourDetails;  // ⚠️ REMOVE FROM RESPONSE
+    return result;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -447,28 +447,55 @@ exports.getWorks = async (projectNo) => {
     });
 };
 
+
 // ═══════════════════════════════════════════════════════════════════════════
-// ✅ PROPERLY FIXED: GET WORK BY ID (Migrate + Enrich + Clean)
+// OPTIMIZED: Fast getWorkById - Only process what exists
 // ═══════════════════════════════════════════════════════════════════════════
-exports.getWorkById = async (workId, projectNo = null) => {
+exports.getWorkById = async (workId, projectNo = null, labourId = null) => {
     const doc = await worksCollection.doc(workId).get();
     if (!doc.exists) throw new Error("Work log not found");
 
     let work = { workId: doc.id, ...doc.data() };
 
-    // Validation: ensure work belongs to the project if projectNo provided
     if (projectNo && work.projectNo !== projectNo) {
         throw new Error(`Work log '${workId}' does not belong to project '${projectNo}'`);
     }
 
-    // ⚠️ STEP 1: Migrate legacy data to new structure
-    work = await migrateLegacyLabourData(work);
-    
-    // ⚠️ STEP 2: Enrich labourDetails with live data
-    work.labourDetails = await buildLabourDetails(work.labourDetails);
-    
-    // ⚠️ STEP 3: Remove legacy fields from root level
-    work = cleanLegacyLabourFields(work);
+    // ⚠️ PERFORMANCE: Only process labour if it exists
+    const hasLegacyLabour = work.labourName || work.labourEntries;
+    const hasModernLabour = work.labourDetails && Object.keys(work.labourDetails).length > 0;
+
+    if (hasLegacyLabour || hasModernLabour) {
+        // Migrate legacy format if needed
+        if (hasLegacyLabour && !hasModernLabour) {
+            work = await migrateLegacyLabourData(work);
+        }
+        
+        // Enrich ONLY if labour exists
+        if (work.labourDetails && Object.keys(work.labourDetails).length > 0) {
+            work.labourDetails = await buildLabourDetails(work.labourDetails);
+            
+            // Filter by labourId if provided
+            if (labourId) {
+                work.labourDetails = work.labourDetails[labourId] 
+                    ? { [labourId]: work.labourDetails[labourId] }
+                    : {};
+            }
+            
+            // Remove if empty after filter
+            if (Object.keys(work.labourDetails).length === 0) {
+                delete work.labourDetails;
+            }
+        } else {
+            delete work.labourDetails;
+        }
+        
+        // Clean legacy fields
+        work = cleanLegacyLabourFields(work);
+    } else {
+        // No labour data - remove field completely
+        delete work.labourDetails;
+    }
 
     return work;
 };
