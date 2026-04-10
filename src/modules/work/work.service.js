@@ -59,6 +59,107 @@ const buildLabourDetails = async (storedLabourDetails) => {
     return newMap;
 };
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ⚠️ LEGACY DATA MIGRATION: Convert old labour format to new structure
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * Migrates legacy labour data into the new labourDetails structure.
+ * 
+ * OLD FORMAT (at root level):
+ *   labourName: "Siva"
+ *   labourPhone: "9876543210"
+ *   labourEntries: [{sno: 1, workType: "FC", quantity: 2}, ...]
+ *   labour: "FC (2), MC (3)"
+ * 
+ * NEW FORMAT (nested in labourDetails):
+ *   labourDetails: {
+ *     "labourId": {
+ *       headLabourName: "Siva",
+ *       headLabourPhoneNumber: "9876543210",
+ *       subLabourDetails: { "FC": 2, "MC": 3 },
+ *       totalLabourCount: 5
+ *     }
+ *   }
+ */
+const migrateLegacyLabourData = async (workData) => {
+    // Check if migration is needed
+    const hasLegacyData = workData.labourName || workData.labourEntries || workData.labour;
+    const hasModernData = workData.labourDetails && Object.keys(workData.labourDetails).length > 0;
+
+    // If already migrated or no legacy data, return as-is
+    if (!hasLegacyData || hasModernData) {
+        return workData;
+    }
+
+    // Build new labourDetails from legacy fields
+    const labourName = workData.labourName || "Unknown Labour";
+    const labourPhone = workData.labourPhone || "N/A";
+    const labourEntries = workData.labourEntries || [];
+
+    // Convert labourEntries to subLabourDetails
+    const subLabourDetails = {};
+    let totalLabourCount = 0;
+
+    if (Array.isArray(labourEntries)) {
+        labourEntries.forEach(entry => {
+            const workType = (entry.workType || "UNKNOWN").toUpperCase();
+            const quantity = Number(entry.quantity) || 0;
+            subLabourDetails[workType] = (subLabourDetails[workType] || 0) + quantity;
+            totalLabourCount += quantity;
+        });
+    }
+
+    // Try to find the labour in master registry by name
+    let headLabourId = `legacy_${labourName.toLowerCase().replace(/\s+/g, '_')}`;
+    try {
+        const master = await labourService.getLabourMasterByName(labourName);
+        if (master && master.id) {
+            headLabourId = master.id;
+        }
+    } catch (_) {
+        // Labour not in registry, use legacy ID
+    }
+
+    // Create the new structure
+    const newLabourDetails = {
+        [headLabourId]: {
+            headLabourId: headLabourId,
+            headLabourName: labourName,
+            headLabourPhoneNumber: labourPhone,
+            subLabourDetails: subLabourDetails,
+            totalLabourCount: totalLabourCount
+        }
+    };
+
+    return {
+        ...workData,
+        labourDetails: newLabourDetails
+    };
+};
+
+/**
+ * Removes legacy labour fields from the root level.
+ * These fields should only exist inside labourDetails.
+ */
+const cleanLegacyLabourFields = (workData) => {
+    const legacyFields = [
+        'labourPhone',
+        'labourEntries', 
+        'labourName',
+        'labour',
+        'headLabourId',
+        'headLabourName',
+        'headLabourPhoneNumber'
+    ];
+
+    const cleaned = { ...workData };
+    legacyFields.forEach(field => {
+        delete cleaned[field];
+    });
+
+    return cleaned;
+};
+
 /**
  * CONCEPT:
  * - Each work name is UNIQUE per project (e.g. "Pillar shuttering" = 1 doc).
@@ -211,14 +312,97 @@ exports.updateSubLabourForWork = async (projectNo, workId, labourId, subLabourDe
     const incomingSubMap = {};
     if (subLabourDetails && typeof subLabourDetails === 'object') {
         for (const [key, val] of Object.entries(subLabourDetails)) {
-            incomingSubMap[key.trim().toUpperCase()] = Number(val) || 0;
+            const type = key.trim().toUpperCase();
+            const count = Number(val) || 0;
+            incomingSubMap[type] = count;
         }
     }
 
-    const finalSubMap = { ...(entry.subLabourDetails || {}), ...incomingSubMap };
+    // Merge with existing subLabourDetails
+    entry.subLabourDetails = { ...(entry.subLabourDetails || {}), ...incomingSubMap };
+    entry.totalLabourCount = Object.values(entry.subLabourDetails).reduce((s, v) => s + v, 0);
 
-    map[labourId].subLabourDetails = finalSubMap;
-    map[labourId].totalLabourCount = Object.values(finalSubMap).reduce((sum, val) => sum + val, 0);
+    await workRef.update({
+        labourDetails: map,
+        updatedAt: now()
+    });
+
+    const updated = await workRef.get();
+    const finalData = { workId: updated.id, ...updated.data() };
+    finalData.labourDetails = await buildLabourDetails(finalData.labourDetails);
+
+    return finalData;
+};
+
+/**
+ * Edit a single sub-labour type count
+ */
+exports.editSubLabourCount = async (projectNo, workId, labourId, type, count) => {
+    const workRef = worksCollection.doc(workId);
+    const workDoc = await workRef.get();
+    if (!workDoc.exists) throw new Error("Work log not found");
+
+    const docData = workDoc.data();
+    if (docData.projectNo !== projectNo) {
+        throw new Error(`Work '${workId}' does not belong to project '${projectNo}'`);
+    }
+
+    let map = docData.labourDetails || {};
+    if (map.headLabourId && typeof map.headLabourId === 'string') {
+        map = { [map.headLabourId]: map };
+    }
+
+    if (!map[labourId]) {
+        throw new Error(`Labour ID '${labourId}' not assigned to this work`);
+    }
+
+    const entry = map[labourId];
+    const normalizedType = type.trim().toUpperCase();
+    entry.subLabourDetails = entry.subLabourDetails || {};
+    entry.subLabourDetails[normalizedType] = Number(count) || 0;
+    entry.totalLabourCount = Object.values(entry.subLabourDetails).reduce((s, v) => s + v, 0);
+
+    await workRef.update({
+        labourDetails: map,
+        updatedAt: now()
+    });
+
+    const updated = await workRef.get();
+    const finalData = { workId: updated.id, ...updated.data() };
+    finalData.labourDetails = await buildLabourDetails(finalData.labourDetails);
+
+    return finalData;
+};
+
+/**
+ * Delete a specific sub-labour type entry
+ */
+exports.deleteSubLabourType = async (projectNo, workId, labourId, type) => {
+    const workRef = worksCollection.doc(workId);
+    const workDoc = await workRef.get();
+    if (!workDoc.exists) throw new Error("Work log not found");
+
+    const docData = workDoc.data();
+    if (docData.projectNo !== projectNo) {
+        throw new Error(`Work '${workId}' does not belong to project '${projectNo}'`);
+    }
+
+    let map = docData.labourDetails || {};
+    if (map.headLabourId && typeof map.headLabourId === 'string') {
+        map = { [map.headLabourId]: map };
+    }
+
+    if (!map[labourId]) {
+        throw new Error(`Labour ID '${labourId}' not assigned to this work`);
+    }
+
+    const entry = map[labourId];
+    const normalizedType = type.trim().toUpperCase();
+
+    if (entry.subLabourDetails && entry.subLabourDetails[normalizedType] !== undefined) {
+        delete entry.subLabourDetails[normalizedType];
+        entry.totalLabourCount = Object.values(entry.subLabourDetails).reduce((s, v) => s + v, 0);
+    }
 
     await workRef.update({
         labourDetails: map,
@@ -234,7 +418,6 @@ exports.updateSubLabourForWork = async (projectNo, workId, labourId, subLabourDe
 
 
 
-
 // ═══════════════════════════════════════════════════════════════════════════
 // GET WORKS (with live labour enrichment)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -246,9 +429,11 @@ exports.getWorks = async (projectNo) => {
     const snapshot = await query.get();
     let works = snapshot.docs.map((doc) => ({ workId: doc.id, ...doc.data() }));
 
-    // Enrich each work with live labour details
+    // Migrate legacy data, enrich, and clean
     for (let i = 0; i < works.length; i++) {
+        works[i] = await migrateLegacyLabourData(works[i]); // ⚠️ MIGRATE FIRST
         works[i].labourDetails = await buildLabourDetails(works[i].labourDetails);
+        works[i] = cleanLegacyLabourFields(works[i]); // ⚠️ CLEAN LEGACY
     }
 
 
@@ -263,20 +448,28 @@ exports.getWorks = async (projectNo) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// STANDARD CRUD
+// ✅ PROPERLY FIXED: GET WORK BY ID (Migrate + Enrich + Clean)
 // ═══════════════════════════════════════════════════════════════════════════
 exports.getWorkById = async (workId, projectNo = null) => {
     const doc = await worksCollection.doc(workId).get();
     if (!doc.exists) throw new Error("Work log not found");
 
-    const work = { workId: doc.id, ...doc.data() };
+    let work = { workId: doc.id, ...doc.data() };
 
     // Validation: ensure work belongs to the project if projectNo provided
     if (projectNo && work.projectNo !== projectNo) {
         throw new Error(`Work log '${workId}' does not belong to project '${projectNo}'`);
     }
 
+    // ⚠️ STEP 1: Migrate legacy data to new structure
+    work = await migrateLegacyLabourData(work);
+    
+    // ⚠️ STEP 2: Enrich labourDetails with live data
     work.labourDetails = await buildLabourDetails(work.labourDetails);
+    
+    // ⚠️ STEP 3: Remove legacy fields from root level
+    work = cleanLegacyLabourFields(work);
+
     return work;
 };
 
@@ -328,195 +521,106 @@ const _generateDateVariations = (fromStr, toStr) => {
     if (!fromD || !fromD.isValid()) return [];
 
     let current = fromD;
-    const vars = new Set();
-    while (current.isBefore(toD, 'day') || current.isSame(toD, 'day')) {
-        vars.add(current.format("YYYY-MM-DD"));
-        vars.add(current.format("DD-MM-YYYY"));
+    const variations = [];
+    while (current.isSameOrBefore(toD)) {
+        variations.push(current.format("DD-MM-YYYY"));
+        variations.push(current.format("YYYY-MM-DD"));
         current = current.add(1, 'day');
-        if (vars.size > 28) break; // ensure we stay safely under Firestore's 30 limit for 'in'
     }
-    return Array.from(vars);
+    return [...new Set(variations)];
 };
 
-/**
- * Get work documents for a specific project + date.
- * Fully enriched with sub-labour arrays recursively.
- */
+// ═══════════════════════════════════════════════════════════════════════════
+// FETCH WORK ON A SINGLE DATE
+// ═══════════════════════════════════════════════════════════════════════════
 exports.getWorkByDate = async (projectNo, date) => {
-    const variations = _generateDateVariations(date, date);
-    if (variations.length === 0) return [];
+    if (!projectNo) throw new Error("projectNo is required");
+    if (!date) throw new Error("date is required (DD-MM-YYYY or YYYY-MM-DD format)");
+
+    const parsedD = _parseD(date);
+    if (!parsedD || !parsedD.isValid()) {
+        throw new Error(`Invalid date format: ${date}. Use DD-MM-YYYY or YYYY-MM-DD`);
+    }
+
+    const ddMMYYYY = parsedD.format("DD-MM-YYYY");
+    const yyyyMMDD = parsedD.format("YYYY-MM-DD");
 
     const snapshot = await worksCollection
         .where("projectNo", "==", projectNo)
-        .where("date", "in", variations)
+        .where("date", "in", [ddMMYYYY, yyyyMMDD])
         .get();
 
     if (snapshot.empty) return [];
 
-    const works = snapshot.docs.map(doc => ({ workId: doc.id, ...doc.data() }));
+    let works = snapshot.docs.map(doc => ({ workId: doc.id, ...doc.data() }));
 
-    // Enrich missing manual fields
+    // Migrate, enrich, and clean
     for (let i = 0; i < works.length; i++) {
+        works[i] = await migrateLegacyLabourData(works[i]); // ⚠️ MIGRATE
         works[i].labourDetails = await buildLabourDetails(works[i].labourDetails);
+        works[i] = cleanLegacyLabourFields(works[i]); // ⚠️ CLEAN
     }
+
     return works;
 };
 
-exports.getWorksByWeek = async (projectNo, from, to) => {
-    const fromDay = _parseD(from);
-    const toDay = _parseD(to);
+// ═══════════════════════════════════════════════════════════════════════════
+// FETCH WORKS IN A DATE RANGE (Week View)
+// ═══════════════════════════════════════════════════════════════════════════
+exports.getWorksByWeek = async (projectNo, fromDate, toDate) => {
+    if (!projectNo) throw new Error("projectNo is required");
+    if (!fromDate || !toDate) throw new Error("Both 'from' and 'to' dates are required");
 
-    // In case the date gap is wildly huge and exceeds 30 variations, filter safely in-memory.
-    const snapshot = await worksCollection
-        .where("projectNo", "==", projectNo)
-        .get();
+    const fromD = _parseD(fromDate);
+    const toD = _parseD(toDate);
 
-    if (snapshot.empty) return [];
+    if (!fromD || !fromD.isValid() || !toD || !toD.isValid()) {
+        throw new Error("Invalid date format. Use DD-MM-YYYY or YYYY-MM-DD");
+    }
 
-    const works = [];
-    snapshot.docs.forEach(doc => {
-        const data = doc.data();
-        const workDay = _parseD(data.date);
-        if (workDay && workDay.isValid() &&
-            (workDay.isSame(fromDay, 'day') || workDay.isAfter(fromDay, 'day')) &&
-            (workDay.isSame(toDay, 'day') || workDay.isBefore(toDay, 'day'))) {
-            works.push({ workId: doc.id, ...data });
-        }
+    const dateVariations = _generateDateVariations(fromDate, toDate);
+
+    // Firestore "in" supports max 30 values
+    const chunks = [];
+    for (let i = 0; i < dateVariations.length; i += 30) {
+        chunks.push(dateVariations.slice(i, i + 30));
+    }
+
+    const allSnaps = await Promise.all(
+        chunks.map(chunk =>
+            worksCollection
+                .where("projectNo", "==", projectNo)
+                .where("date", "in", chunk)
+                .get()
+        )
+    );
+
+    const workMap = new Map();
+    allSnaps.forEach(snap => {
+        snap.docs.forEach(doc => {
+            workMap.set(doc.id, { workId: doc.id, ...doc.data() });
+        });
     });
 
-    works.sort((a, b) => _parseD(a.date).valueOf() - _parseD(b.date).valueOf());
+    let works = Array.from(workMap.values());
 
-    // Enrich missing manual fields
+    // Migrate, enrich, and clean
     for (let i = 0; i < works.length; i++) {
+        works[i] = await migrateLegacyLabourData(works[i]); // ⚠️ MIGRATE
         works[i].labourDetails = await buildLabourDetails(works[i].labourDetails);
+        works[i] = cleanLegacyLabourFields(works[i]); // ⚠️ CLEAN
     }
+
+    // Sort by date ascending
+    works.sort((a, b) => {
+        const aD = _parseD(a.date);
+        const bD = _parseD(b.date);
+        if (!aD || !bD) return 0;
+        return aD.valueOf() - bD.valueOf();
+    });
+
     return works;
 };
-// ═══════════════════════════════════════════════════════════════════════════
-// EDIT ONE SUB-LABOUR COUNT
-// ═══════════════════════════════════════════════════════════════════════════
-exports.editSubLabourCount = async (projectNo, workId, labourId, type, count) => {
-    const workRef = worksCollection.doc(workId);
-    const workDoc = await workRef.get();
-    if (!workDoc.exists) throw new Error("Work log not found");
-
-    const docData = workDoc.data();
-    if (docData.projectNo !== projectNo) {
-        throw new Error(`Work '${workId}' does not belong to project '${projectNo}'`);
-    }
-
-    let map = docData.labourDetails || {};
-    if (map.headLabourId && typeof map.headLabourId === 'string') {
-        map = { [map.headLabourId]: map };
-    }
-
-    if (!map[labourId]) {
-        throw new Error(`Head Labour ID '${labourId}' is not assigned to this work entry.`);
-    }
-
-    const normalizedType = type.trim().toUpperCase();
-    const entry = map[labourId];
-    const existingSubMap = entry.subLabourDetails || {};
-
-    if (!(normalizedType in existingSubMap)) {
-        throw new Error(`Sub-labour type '${normalizedType}' not found for this labour in this work`);
-    }
-
-    const updatedSubMap = { ...existingSubMap, [normalizedType]: Number(count) || 0 };
-    map[labourId].subLabourDetails = updatedSubMap;
-    map[labourId].totalLabourCount = Object.values(updatedSubMap).reduce((sum, val) => sum + val, 0);
-
-    await workRef.update({ labourDetails: map, updatedAt: now() });
-
-    const updated = await workRef.get();
-    const finalData = { workId: updated.id, ...updated.data() };
-    finalData.labourDetails = await buildLabourDetails(finalData.labourDetails);
-    return finalData;
-};
-
-// ═══════════════════════════════════════════════════════════════════════════
-// DELETE ONE SUB-LABOUR TYPE FROM A WORK
-// ═══════════════════════════════════════════════════════════════════════════
-exports.deleteSubLabourType = async (projectNo, workId, labourId, type) => {
-    const workRef = worksCollection.doc(workId);
-    const workDoc = await workRef.get();
-    if (!workDoc.exists) throw new Error("Work log not found");
-
-    const docData = workDoc.data();
-    if (docData.projectNo !== projectNo) {
-        throw new Error(`Work '${workId}' does not belong to project '${projectNo}'`);
-    }
-
-    let map = docData.labourDetails || {};
-    if (map.headLabourId && typeof map.headLabourId === 'string') {
-        map = { [map.headLabourId]: map };
-    }
-
-    if (!map[labourId]) {
-        throw new Error(`Head Labour ID '${labourId}' is not assigned to this work entry.`);
-    }
-
-    const normalizedType = type.trim().toUpperCase();
-    const entry = map[labourId];
-    const existingSubMap = { ...(entry.subLabourDetails || {}) };
-
-    if (!(normalizedType in existingSubMap)) {
-        throw new Error(`Sub-labour type '${normalizedType}' not found for this labour in this work`);
-    }
-
-    delete existingSubMap[normalizedType];
-
-    map[labourId].subLabourDetails = existingSubMap;
-    map[labourId].totalLabourCount = Object.values(existingSubMap).reduce((sum, val) => sum + val, 0);
-
-    await workRef.update({ labourDetails: map, updatedAt: now() });
-
-    const updated = await workRef.get();
-    const finalData = { workId: updated.id, ...updated.data() };
-    finalData.labourDetails = await buildLabourDetails(finalData.labourDetails);
-    return finalData;
-};
-
-// ═══════════════════════════════════════════════════════════════════════════
-// WEEK FILTER — Mon to Sat date range
-// GET /api/works/project/:projectNo/week?from=16-03-2026&to=21-03-2026
-// ═══════════════════════════════════════════════════════════════════════════
-// exports.getWorksByWeek = async (projectNo, from, to) => {
-//     if (!projectNo || !from || !to) {
-//         throw new Error("projectNo, from, and to are required");
-//     }
-
-//     const snapshot = await worksCollection
-//         .where("projectNo", "==", projectNo)
-//         .get();
-
-//     if (snapshot.empty) return [];
-
-//     const fromDay = dayjs(from, "DD-MM-YYYY");
-//     const toDay = dayjs(to, "DD-MM-YYYY");
-
-//     const works = snapshot.docs
-//         .map(doc => ({ workId: doc.id, ...doc.data() }))
-//         .filter(w => {
-//             const workDay = dayjs(w.date, "DD-MM-YYYY");
-//             return (
-//                 workDay.isValid() &&
-//                 (workDay.isSame(fromDay) || workDay.isAfter(fromDay)) &&
-//                 (workDay.isSame(toDay) || workDay.isBefore(toDay))
-//             );
-//         })
-//         .sort((a, b) =>
-//             dayjs(a.date, "DD-MM-YYYY").valueOf() -
-//             dayjs(b.date, "DD-MM-YYYY").valueOf()
-//         );
-
-//     // Enrich with live labour details
-//     for (let i = 0; i < works.length; i++) {
-//         works[i].labourDetails = await buildLabourDetails(works[i].labourDetails);
-//     }
-
-//     return works;
-// };
 
 // ═══════════════════════════════════════════════════════════════════════════
 // REVERSE LOOKUP — all works/projects a labour was assigned to

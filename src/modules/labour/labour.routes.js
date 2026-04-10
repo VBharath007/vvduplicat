@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const labourController = require("./labour.controller");
-const workController = require("../work/work.controller"); // Import work controller here
+const workController = require("../work/work.controller");
 const { verifyToken } = require("../../middleware/auth.middleware");
 const { authorize } = require("../../middleware/role.middleware");
 
@@ -15,15 +15,22 @@ router.get("/master", isAdmin, labourController.getAllHeadLabours);
 router.get("/master/:id", isAdmin, labourController.getHeadLabourById);
 router.put("/master/:id", isAdmin, labourController.updateMasterLabour);
 router.delete("/master/:id", isAdmin, labourController.deleteMasterLabour);
-router.get("/master/:labourId/works", isAdmin, workController.getWorksByLabour); // Fix: use workController
+
+// ⚠️ NEW: Filtered work details for specific labour in specific project
+// GET /api/labours/master/:labourId/projects/:projectNo/works/:workId
+// router.get("/master/:labourId/projects/:projectNo/works/:workId", isAdmin, labourController.getLabourWorkDetails);
+
+// GET /api/labours/master/:labourId/works - All works by this labour
+router.get("/master/:labourId/works", isAdmin, workController.getWorksByLabour);
+
 // ─── Sub-Labour Type CRUD ────────────────────────────────────────────────────
-// POST   /api/labours/sublabour/other      → new type add
-// GET    /api/labours/sublabour/other      → all types list
-// PUT    /api/labours/sublabour/other/:id  → type name edit
-// DELETE /api/labours/sublabour/other/:id  → type delete
 router.post("/sublabour/other", isAdmin, labourController.addOtherType);
 router.get("/sublabour/other", isAdmin, labourController.getAllSubTypes);
 router.put("/sublabour/other/:id", isAdmin, labourController.updateSubType);
 router.delete("/sublabour/other/:id", isAdmin, labourController.deleteSubType);
+
+// Line 19 - add before the general /works route
+router.get("/master/:labourId/projects/:projectNo/works", isAdmin, labourController.getLabourProjectWorks);
+router.get("/master/:labourId/works", isAdmin, workController.getWorksByLabour);
 
 module.exports = router;

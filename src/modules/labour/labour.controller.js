@@ -1,4 +1,5 @@
 const labourService = require("./labour.service");
+const workService = require("../work/work.service");
 
 // ─── Head Labour Master CRUD ────────────────────────────────────────────────
 
@@ -13,6 +14,7 @@ exports.addMasterLabour = async (req, res) => {
         res.status(400).json({ error: error.message });
     }
 };
+
 exports.payLabour = async (req, res) => {
     try {
         const { labourId } = req.params;
@@ -40,6 +42,7 @@ exports.payLabour = async (req, res) => {
         });
     }
 };
+
 exports.updateMasterLabour = async (req, res) => {
     try {
         const result = await labourService.updateLabourMaster(req.params.id, req.body);
@@ -75,6 +78,65 @@ exports.getHeadLabourById = async (req, res) => {
         res.status(404).json({ error: error.message });
     }
 };
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ⚠️ NEW: Get filtered work details for specific labour
+// GET /api/labours/master/:labourId/projects/:projectNo/works/:workId
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * Returns work details filtered to show ONLY the specified labour's contribution.
+ * 
+ * Route: Suresh → PRO001 → Work123
+ * Response: Shows ONLY Suresh's details in Work123, NOT other labours
+ */
+// exports.getLabourWorkDetails = async (req, res) => {
+//     try {
+//         const { labourId, projectNo, workId } = req.params;
+
+//         // Get full work details
+//         const work = await workService.getWorkById(workId, projectNo);
+
+//         // Filter to show ONLY this labour's details
+//         const filteredWork = {
+//             workId: work.workId,
+//             projectNo: work.projectNo,
+//             work: work.work,
+//             workName: work.workName,
+//             date: work.date,
+//             tomorrowWork: work.tomorrowWork,
+//             materialUsed: work.materialUsed,
+//             materialRequired: work.materialRequired,
+//             materialSummary: work.materialSummary,
+//             materialReceived: work.materialReceived,
+//             inStock: work.inStock,
+//             status: work.status,
+//             siteExpenses: work.siteExpenses,
+//             remainingBalance: work.remainingBalance,
+//             advanceReceived: work.advanceReceived,
+//             createdAt: work.createdAt,
+//             updatedAt: work.updatedAt,
+//             // ⚠️ CRITICAL: Only include THIS labour's details
+//             labourDetails: {}
+//         };
+
+//         // Extract only the specific labour's data from labourDetails
+//         if (work.labourDetails && work.labourDetails[labourId]) {
+//             filteredWork.labourDetails = {
+//                 [labourId]: work.labourDetails[labourId]
+//             };
+//         }
+
+//         res.status(200).json({
+//             success: true,
+//             data: filteredWork
+//         });
+//     } catch (error) {
+//         res.status(404).json({
+//             success: false,
+//             error: error.message
+//         });
+//     }
+// };
 
 // ─── Sub-Labour Type CRUD ───────────────────────────────────────────────────
 
@@ -119,5 +181,40 @@ exports.deleteSubType = async (req, res) => {
         res.json(result);
     } catch (error) {
         res.status(400).json({ error: error.message });
+    }
+};
+
+exports.getLabourProjectWorks = async (req, res) => {
+    try {
+        const { labourId, projectNo } = req.params;
+        
+        // Get all works by this labour
+        const allData = await workService.getWorksByLabour(labourId);
+        
+        // Filter to specific project
+        const project = allData.projects.find(p => p.projectNo === projectNo);
+        
+        if (!project) {
+            return res.status(404).json({
+                success: false,
+                message: `Labour has no work in project ${projectNo}`
+            });
+        }
+        
+        res.status(200).json({
+            success: true,
+            data: {
+                labourId,
+                projectNo,
+                projectName: project.projectName,
+                works: project.works,
+                totalWorks: project.totalWorks
+            }
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
     }
 };
