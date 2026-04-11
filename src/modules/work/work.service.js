@@ -3,6 +3,10 @@ const { WORKS } = require("../../models/firestore.collections");
 const labourService = require("../labour/labour.service");
 const dayjs = require("dayjs");
 
+const isSameOrBefore = require("dayjs/plugin/isSameOrBefore");
+
+dayjs.extend(isSameOrBefore);
+
 const worksCollection = db.collection(WORKS);
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -14,7 +18,13 @@ const now = () => dayjs().format("DD-MM-YY HH:mm");
  * Uses the stored counts if available, otherwise returns zeros.
  */
 const buildLabourDetails = async (storedLabourDetails) => {
-    if (!storedLabourDetails || Object.keys(storedLabourDetails).length === 0) return {};
+  if (
+  !storedLabourDetails ||
+  typeof storedLabourDetails !== "object" ||
+  Object.keys(storedLabourDetails).length === 0
+) {
+  return {};
+}
 
     const masters = await labourService.getLabourMasters();
     const subTypes = await labourService.getSubLabourTypes();
@@ -549,7 +559,7 @@ const _generateDateVariations = (fromStr, toStr) => {
 
     let current = fromD;
     const variations = [];
-    while (current.isSameOrBefore(toD)) {
+   while (current.valueOf() <= toD.valueOf())  {
         variations.push(current.format("DD-MM-YYYY"));
         variations.push(current.format("YYYY-MM-DD"));
         current = current.add(1, 'day');
