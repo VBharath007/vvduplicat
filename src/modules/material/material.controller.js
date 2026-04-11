@@ -227,6 +227,44 @@ exports.updateMaterialAdvance = async (req, res, next) => {
     }
 };
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ADD THIS CODE TO material_controller.js
+// PASTE AFTER THE EXISTING MATERIAL REQUIRED CONTROLLERS
+// (AFTER getAllMaterialRequired handler)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+exports.updateMaterialRequired = async (req, res, next) => {
+    try {
+        const result = await materialService.updateMaterialRequired(req.params.requiredId, req.body);
+        res.status(200).json({ 
+            success: true, 
+            data: result,
+            message: "Material required record updated successfully"
+        });
+    } catch (error) {
+        res.status(400).json({ 
+            success: false, 
+            message: error.message 
+        });
+    }
+};
+
+exports.deleteMaterialRequired = async (req, res, next) => {
+    try {
+        const result = await materialService.deleteMaterialRequired(req.params.requiredId);
+        res.status(200).json({ 
+            success: true, 
+            data: result,
+            message: "Material required record deleted successfully"
+        });
+    } catch (error) {
+        res.status(400).json({ 
+            success: false, 
+            message: error.message 
+        });
+    }
+};
+
 /**
  * DELETE /api/materials/advances/:id
  * Delete a material advance record

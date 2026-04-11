@@ -40,6 +40,25 @@ router.post("/required", isAdmin, materialController.addMaterialRequired);
 router.get("/required", isAdmin, materialController.getAllMaterialRequired);
 router.get("/required/:projectNo", isAdmin, materialController.getMaterialRequired);
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ADD THESE ROUTES TO material_routes.js
+// PASTE AFTER THE EXISTING MATERIAL REQUIRED ROUTES
+// (AFTER: router.get("/required/:projectNo", isAdmin, materialController.getMaterialRequired);)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// --- Material Required - Update & Delete --- //
+/**
+ * PUT /api/materials/required/:requiredId
+ * Update a material required record
+ * Body: { requiredQuantity?, materialName?, remark? }
+ */
+router.put("/required/:requiredId", isAdmin, materialController.updateMaterialRequired);
+
+/**
+ * DELETE /api/materials/required/:requiredId
+ * Delete a material required record
+ */
+router.delete("/required/:requiredId", isAdmin, materialController.deleteMaterialRequired);
 // ═════════════════════════════════════════════════════════════════════════════
 // ──── MATERIAL ADVANCE PAYMENT ROUTES ──────────────────────────────────────
 // ═════════════════════════════════════════════════════════════════════════════

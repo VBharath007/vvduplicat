@@ -1147,6 +1147,84 @@ exports.deleteMaterialAdvance = async (id) => {
     return { message: "Material advance record deleted successfully" };
 };
 
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ADD THIS CODE TO material_service.js
+// PASTE AFTER LINE 770 (after getMaterialRequired method)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Update a material required record
+ * PUT /api/materials/required/:requiredId
+ * 
+ * Body: { requiredQuantity?, materialName?, remark? }
+ */
+exports.updateMaterialRequired = async (requiredId, updateData) => {
+    const docRef = materialRequiredCollection.doc(requiredId);
+    const doc = await docRef.get();
+    
+    if (!doc.exists) {
+        throw new Error("Material required record not found");
+    }
+
+    const cleanData = {};
+    
+    // Only update fields that are explicitly provided
+    if (updateData.requiredQuantity !== undefined && updateData.requiredQuantity !== null) {
+        const qty = Number(updateData.requiredQuantity);
+        if (qty < 0) throw new Error("Quantity cannot be negative");
+        cleanData.requiredQuantity = qty;
+    }
+    
+    if (updateData.materialName !== undefined && updateData.materialName !== null && updateData.materialName !== "") {
+        cleanData.materialName = updateData.materialName;
+    }
+    
+    if (updateData.remark !== undefined && updateData.remark !== null && updateData.remark !== "") {
+        cleanData.remark = updateData.remark;
+    }
+
+    if (Object.keys(cleanData).length === 0) {
+        throw new Error("No valid fields to update. Send at least one of: requiredQuantity, materialName, remark");
+    }
+
+    cleanData.updatedAt = new Date().toISOString();
+
+    await docRef.update(cleanData);
+    const updatedDoc = await docRef.get();
+    
+    return { 
+        id: requiredId, 
+        ...updatedDoc.data()
+    };
+};
+
+/**
+ * Delete a material required record
+ * DELETE /api/materials/required/:requiredId
+ */
+exports.deleteMaterialRequired = async (requiredId) => {
+    const docRef = materialRequiredCollection.doc(requiredId);
+    const doc = await docRef.get();
+    
+    if (!doc.exists) {
+        throw new Error("Material required record not found");
+    }
+
+    const data = doc.data();
+
+    await docRef.delete();
+    
+    return { 
+        message: "Material required record deleted successfully",
+        deletedRecord: {
+            id: requiredId,
+            projectNo: data.projectNo,
+            materialName: data.materialName,
+            requiredQuantity: data.requiredQuantity
+        }
+    };
+};
 /**
  * Get bank transaction history for a specific bank (used by advance service)
  */
