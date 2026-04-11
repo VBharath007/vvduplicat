@@ -745,28 +745,28 @@ exports.getAllMaterialRequired = async () => {
     return snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
 };
 
+/**
+ * Get all material required entries for a project
+ * GET /api/materials/required?projectNo=VVP010
+ */
 exports.getMaterialRequired = async (projectNo) => {
-    const [planSnap, stockSnap] = await Promise.all([
-        materialPlanCollection.where("projectNo", "==", projectNo).get(),
-        stockCollection.where("projectNo", "==", projectNo).get(),
-    ]);
+    if (!projectNo) {
+        throw new Error("projectNo is required");
+    }
 
-    const stocks = stockSnap.docs.map(doc => doc.data());
+    const snapshot = await materialRequiredCollection
+        .where("projectNo", "==", projectNo)
+        .get();
 
-    return planSnap.docs.map(doc => {
-        const plan = doc.data();
-        const stockItem = stocks.find(s => s.materialId === plan.materialId);
-        const stock = stockItem ? stockItem.stock : 0;
-        const plannedQty = Number(plan.plannedQuantity) || 0;
-        const required = plannedQty - stock;
-        return {
-            materialId: plan.materialId,
-            materialName: plan.materialName,
-            plannedQuantity: plannedQty,
-            stock,
-            materialRequired: required > 0 ? required : 0,
-        };
-    });
+    if (snapshot.empty) {
+        return [];
+    }
+
+    return snapshot.docs.map(doc => ({
+        id: doc.id,
+        requiredId: doc.id,  // ← Also include as requiredId for consistency
+        ...doc.data()
+    }));
 };
 
 // ═════════════════════════════════════════════════════════════════════════════
