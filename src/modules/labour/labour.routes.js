@@ -33,4 +33,33 @@ router.delete("/sublabour/other/:id", isAdmin, labourController.deleteSubType);
 router.get("/master/:labourId/projects/:projectNo/works", isAdmin, labourController.getLabourProjectWorks);
 router.get("/master/:labourId/works", isAdmin, workController.getWorksByLabour);
 
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ─── LABOUR PAYMENTS (ADD THIS TO THE END OF labour.routes.js) ────────────
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ─── RECORD PAYMENT ────────────────────────────────────────────────────────
+// POST /api/labours/:labourId/:projectNo/payment
+router.post("/:labourId/:projectNo/payment", isAdmin, labourController.recordPayment);
+
+// ─── GET PAYMENTS FOR PROJECT ─────────────────────────────────────────────
+// GET /api/labours/:labourId/:projectNo/payments
+router.get("/:labourId/:projectNo/payments", isAdmin, labourController.getProjectPayments);
+
+// ─── GET ALL PAYMENTS FOR LABOUR ──────────────────────────────────────────
+// GET /api/labours/:labourId/payments
+router.get("/:labourId/payments", isAdmin, labourController.getPaymentHistory);
+
+// ─── GET PAYMENT DETAILS ──────────────────────────────────────────────────
+// GET /api/labours/payment/:paymentId
+router.get("/payment/:paymentId", isAdmin, labourController.getPaymentDetails);
+
+// ─── UPDATE PAYMENT ───────────────────────────────────────────────────────
+// PUT /api/labours/payment/:paymentId
+router.put("/payment/:paymentId", isAdmin, labourController.updatePayment);
+
+// ─── DELETE PAYMENT ───────────────────────────────────────────────────────
+// DELETE /api/labours/payment/:paymentId
+router.delete("/payment/:paymentId", isAdmin, labourController.deletePayment);
+
 module.exports = router;

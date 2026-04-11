@@ -334,4 +334,428 @@ exports.payLabour = async (labourId, amount, method, bankId) => {
         success: true,
         message: "Labour payment successful"
     };
+};// ═════════════════════════════════════════════════════════════════════════════
+// ─── LABOUR PAYMENTS (ADD THIS TO THE END OF labour.service.js) ────────────
+// ═════════════════════════════════════════════════════════════════════════════
+
+const paymentsCollection = db.collection("labourPayments");
+
+const getFormattedDate = (date) =>
+    date ? dayjs(date).format("DD-MM-YYYY") : dayjs().format("DD-MM-YYYY");
+
+/**
+ * Record a labour payment
+ * @param {string} labourId
+ * @param {string} projectNo
+ * @param {object} paymentData - { amount, method, bankId?, fromDate, toDate, remark }
+ */
+exports.recordLabourPayment = async (labourId, projectNo, paymentData) => {
+    if (!labourId || !projectNo) {
+        throw new Error("labourId and projectNo are required");
+    }
+    if (!paymentData.amount || Number(paymentData.amount) <= 0) {
+        throw new Error("Valid amount is required");
+    }
+    if (!paymentData.method) {
+        throw new Error("Payment method (cash/bank) is required");
+    }
+
+    const amount = Number(paymentData.amount);
+    const method = (paymentData.method || "cash").toLowerCase();
+    const fromDate = getFormattedDate(paymentData.fromDate);
+    const toDate = getFormattedDate(paymentData.toDate);
+    const remark = paymentData.remark || "";
+
+    let bankName = null;
+    let bankTransactionId = null;
+
+    // 🏦 BANK PAYMENT LOGIC
+    if (method === "bank") {
+        if (!paymentData.bankId) {
+            throw new Error("bankId is required for bank payments");
+        }
+
+        const bankDoc = await banksCollection.doc(paymentData.bankId).get();
+        if (!bankDoc.exists) {
+            throw new Error(`Bank with ID ${paymentData.bankId} not found`);
+        }
+
+        const bankData = bankDoc.data();
+        const currentBalance = Number(bankData.currentBalance || 0);
+
+        if (currentBalance < amount) {
+            throw new Error(`Insufficient bank balance. Available: ₹${currentBalance}`);
+        }
+
+        const newBalance = currentBalance - amount;
+
+        // Update bank balance (DEBIT)
+        await banksCollection.doc(paymentData.bankId).update({
+            currentBalance: newBalance,
+            closingBalance: newBalance,
+            updatedAt: new Date().toISOString()
+        });
+
+        // Create transaction
+        const transactionRef = await banksCollection
+            .doc(paymentData.bankId)
+            .collection("transactions")
+            .add({
+                type: "DEBIT",
+                amount: amount,
+                projectNo: projectNo,
+                labourId: labourId,
+                remark: `Labour Payment: ${remark || "N/A"}`,
+                date: new Date().toISOString(),
+                transactionType: "LABOUR_PAYMENT",
+                balanceBefore: currentBalance,
+                balanceAfter: newBalance,
+                createdAt: new Date().toISOString(),
+                relatedPaymentId: null // Will be set after payment created
+            });
+
+        bankName = bankData.accountName || bankData.bankName || "Bank";
+        bankTransactionId = transactionRef.id;
+    }
+
+    // Save payment record
+    const paymentRecord = {
+        labourId,
+        projectNo,
+        amount,
+        method,
+        bankId: method === "bank" ? paymentData.bankId : null,
+        bankName: method === "bank" ? bankName : null,
+        bankTransactionId: method === "bank" ? bankTransactionId : null,
+        fromDate,
+        toDate,
+        remark,
+        date: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+    };
+
+    const paymentRef = await paymentsCollection.add(paymentRecord);
+
+    // Update transaction with payment ID reference
+    if (method === "bank" && bankTransactionId) {
+        await banksCollection
+            .doc(paymentData.bankId)
+            .collection("transactions")
+            .doc(bankTransactionId)
+            .update({
+                relatedPaymentId: paymentRef.id
+            });
+    }
+
+    return {
+        paymentId: paymentRef.id,
+        ...paymentRecord
+    };
 };
+
+/**
+ * Get all payments for a labour in a specific project
+ */
+exports.getLabourPaymentsByProject = async (labourId, projectNo) => {
+    if (!labourId || !projectNo) {
+        throw new Error("labourId and projectNo are required");
+    }
+
+    const snapshot = await paymentsCollection
+        .where("labourId", "==", labourId)
+        .where("projectNo", "==", projectNo)
+        .orderBy("date", "desc")
+        .get();
+
+    const payments = snapshot.docs.map(doc => ({
+        paymentId: doc.id,
+        ...doc.data()
+    }));
+
+    let totalPaid = 0;
+    payments.forEach(p => {
+        totalPaid += Number(p.amount) || 0;
+    });
+
+    return {
+        labourId,
+        projectNo,
+        payments,
+        totalPaid
+    };
+};
+
+/**
+ * Get all payments for a labour (across all projects)
+ */
+exports.getLabourPayments = async (labourId) => {
+    if (!labourId) {
+        throw new Error("labourId is required");
+    }
+
+    const snapshot = await paymentsCollection
+        .where("labourId", "==", labourId)
+        .orderBy("date", "desc")
+        .get();
+
+    const payments = snapshot.docs.map(doc => ({
+        paymentId: doc.id,
+        ...doc.data()
+    }));
+
+    let totalPaid = 0;
+    payments.forEach(p => {
+        totalPaid += Number(p.amount) || 0;
+    });
+
+    return {
+        labourId,
+        payments,
+        totalPaid
+    };
+};
+
+/**
+ * Get payment details by ID
+ */
+exports.getPaymentById = async (paymentId) => {
+    const doc = await paymentsCollection.doc(paymentId).get();
+    if (!doc.exists) {
+        throw new Error("Payment record not found");
+    }
+
+    return {
+        paymentId: doc.id,
+        ...doc.data()
+    };
+};
+
+/**
+ * Update a labour payment
+ */
+exports.updateLabourPayment = async (paymentId, updateData) => {
+    const docRef = paymentsCollection.doc(paymentId);
+    const doc = await docRef.get();
+
+    if (!doc.exists) {
+        throw new Error("Payment record not found");
+    }
+
+    const existingData = doc.data();
+    const oldAmount = Number(existingData.amount) || 0;
+    const newAmount = updateData.amount !== undefined ? Number(updateData.amount) : oldAmount;
+
+    if (newAmount <= 0) {
+        throw new Error("Amount must be greater than 0");
+    }
+
+    const oldMethod = (existingData.method || "cash").toLowerCase();
+    const newMethod = updateData.method ? updateData.method.toLowerCase() : oldMethod;
+    const oldBankId = existingData.bankId;
+    const newBankId = updateData.bankId;
+
+    // 🏦 BANK ADJUSTMENT LOGIC
+    const amountDiff = newAmount - oldAmount;
+
+    // CASE 1: Both BANK, amount changed
+    if (oldMethod === "bank" && newMethod === "bank") {
+        const bankId = newBankId || oldBankId;
+        if (!bankId) throw new Error("bankId required");
+
+        if (amountDiff !== 0) {
+            const bankDoc = await banksCollection.doc(bankId).get();
+            if (!bankDoc.exists) throw new Error("Bank not found");
+
+            const bankData = bankDoc.data();
+            const currentBalance = Number(bankData.currentBalance || 0);
+            const newBalance = currentBalance - amountDiff;
+
+            if (newBalance < 0) {
+                throw new Error("Insufficient bank balance for adjustment");
+            }
+
+            await banksCollection.doc(bankId).update({
+                currentBalance: newBalance,
+                closingBalance: newBalance,
+                updatedAt: new Date().toISOString()
+            });
+
+            // Create adjustment transaction
+            await banksCollection
+                .doc(bankId)
+                .collection("transactions")
+                .add({
+                    type: amountDiff > 0 ? "DEBIT" : "CREDIT",
+                    amount: Math.abs(amountDiff),
+                    projectNo: existingData.projectNo,
+                    labourId: existingData.labourId,
+                    remark: `Payment adjustment: ${existingData.remark || "N/A"}`,
+                    date: new Date().toISOString(),
+                    transactionType: "LABOUR_PAYMENT_ADJUSTMENT",
+                    balanceBefore: currentBalance,
+                    balanceAfter: newBalance,
+                    createdAt: new Date().toISOString(),
+                    relatedPaymentId: paymentId,
+                    originalTransactionId: existingData.bankTransactionId
+                });
+        }
+    }
+    // CASE 2: CASH → BANK
+    else if (oldMethod === "cash" && newMethod === "bank" && newBankId) {
+        const bankDoc = await banksCollection.doc(newBankId).get();
+        if (!bankDoc.exists) throw new Error("Bank not found");
+
+        const bankData = bankDoc.data();
+        const currentBalance = Number(bankData.currentBalance || 0);
+        if (currentBalance < newAmount) {
+            throw new Error("Insufficient bank balance");
+        }
+
+        const newBalance = currentBalance - newAmount;
+
+        await banksCollection.doc(newBankId).update({
+            currentBalance: newBalance,
+            closingBalance: newBalance,
+            updatedAt: new Date().toISOString()
+        });
+
+        const txnRef = await banksCollection
+            .doc(newBankId)
+            .collection("transactions")
+            .add({
+                type: "DEBIT",
+                amount: newAmount,
+                projectNo: existingData.projectNo,
+                labourId: existingData.labourId,
+                remark: `Labour payment (switched to Bank): ${updateData.remark || existingData.remark || "N/A"}`,
+                date: new Date().toISOString(),
+                transactionType: "LABOUR_PAYMENT",
+                balanceBefore: currentBalance,
+                balanceAfter: newBalance,
+                createdAt: new Date().toISOString(),
+                relatedPaymentId: paymentId
+            });
+
+        updateData.bankTransactionId = txnRef.id;
+        updateData.bankName = bankData.accountName || bankData.bankName || "Bank";
+    }
+    // CASE 3: BANK → CASH
+    else if (oldMethod === "bank" && newMethod === "cash" && oldBankId) {
+        const bankDoc = await banksCollection.doc(oldBankId).get();
+        if (bankDoc.exists) {
+            const bankData = bankDoc.data();
+            const currentBalance = Number(bankData.currentBalance || 0);
+            const newBalance = currentBalance + oldAmount;
+
+            await banksCollection.doc(oldBankId).update({
+                currentBalance: newBalance,
+                closingBalance: newBalance,
+                updatedAt: new Date().toISOString()
+            });
+
+            await banksCollection
+                .doc(oldBankId)
+                .collection("transactions")
+                .add({
+                    type: "CREDIT",
+                    amount: oldAmount,
+                    projectNo: existingData.projectNo,
+                    labourId: existingData.labourId,
+                    remark: `Labour payment reversed (switched to Cash): ${existingData.remark || "N/A"}`,
+                    date: new Date().toISOString(),
+                    transactionType: "LABOUR_PAYMENT_REVERSED",
+                    balanceBefore: currentBalance,
+                    balanceAfter: newBalance,
+                    createdAt: new Date().toISOString(),
+                    relatedPaymentId: paymentId,
+                    originalTransactionId: existingData.bankTransactionId
+                });
+        }
+
+        updateData.bankId = null;
+        updateData.bankName = null;
+        updateData.bankTransactionId = null;
+    }
+
+    const cleanData = {
+        ...updateData,
+        updatedAt: new Date().toISOString()
+    };
+
+    // Only allow updating these fields
+    delete cleanData.labourId;
+    delete cleanData.projectNo;
+    delete cleanData.date;
+    delete cleanData.fromDate;
+    delete cleanData.toDate;
+
+    await docRef.update(cleanData);
+    const updated = await docRef.get();
+
+    return {
+        paymentId: doc.id,
+        ...updated.data()
+    };
+};
+
+/**
+ * Delete a labour payment
+ */
+exports.deleteLabourPayment = async (paymentId) => {
+    const docRef = paymentsCollection.doc(paymentId);
+    const doc = await docRef.get();
+
+    if (!doc.exists) {
+        throw new Error("Payment record not found");
+    }
+
+    const paymentData = doc.data();
+    const amount = Number(paymentData.amount) || 0;
+    const method = (paymentData.method || "cash").toLowerCase();
+    const bankId = paymentData.bankId;
+
+    // 🏦 REVERSE BANK TRANSACTION
+    if (method === "bank" && bankId && amount > 0) {
+        const bankDoc = await banksCollection.doc(bankId).get();
+        if (bankDoc.exists) {
+            const bankData = bankDoc.data();
+            const currentBalance = Number(bankData.currentBalance || 0);
+            const newBalance = currentBalance + amount; // CREDIT back
+
+            await banksCollection.doc(bankId).update({
+                currentBalance: newBalance,
+                closingBalance: newBalance,
+                updatedAt: new Date().toISOString()
+            });
+
+            await banksCollection
+                .doc(bankId)
+                .collection("transactions")
+                .add({
+                    type: "CREDIT",
+                    amount: amount,
+                    projectNo: paymentData.projectNo,
+                    labourId: paymentData.labourId,
+                    remark: `Labour payment deleted: ${paymentData.remark || "N/A"}`,
+                    date: new Date().toISOString(),
+                    transactionType: "LABOUR_PAYMENT_DELETED",
+                    balanceBefore: currentBalance,
+                    balanceAfter: newBalance,
+                    createdAt: new Date().toISOString(),
+                    relatedPaymentId: paymentId,
+                    originalTransactionId: paymentData.bankTransactionId
+                });
+        }
+    }
+
+    await docRef.delete();
+
+    return {
+        message: "Labour payment deleted successfully",
+        paymentId,
+        reversedAmount: method === "bank" ? amount : 0
+    };
+};
+
+module.exports = exports;

@@ -217,4 +217,174 @@ exports.getLabourProjectWorks = async (req, res) => {
             error: error.message
         });
     }
+};// ═════════════════════════════════════════════════════════════════════════════
+// ─── LABOUR PAYMENTS (ADD THIS TO THE END OF labour.controller.js) ────────
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * POST /api/labours/:labourId/:projectNo/payment
+ * Record a new labour payment
+ */
+exports.recordPayment = async (req, res) => {
+    try {
+        const { labourId, projectNo } = req.params;
+
+        if (!labourId || !projectNo) {
+            return res.status(400).json({
+                success: false,
+                message: "labourId and projectNo are required"
+            });
+        }
+
+        const result = await labourService.recordLabourPayment(
+            labourId,
+            projectNo,
+            req.body
+        );
+
+        res.status(201).json({
+            success: true,
+            message: "Payment recorded successfully",
+            data: result
+        });
+    } catch (error) {
+        res.status(400).json({
+            success: false,
+            message: error.message
+        });
+    }
 };
+
+/**
+ * GET /api/labours/:labourId/:projectNo/payments
+ * Get all payments for a labour in a specific project
+ */
+exports.getProjectPayments = async (req, res) => {
+    try {
+        const { labourId, projectNo } = req.params;
+
+        if (!labourId || !projectNo) {
+            return res.status(400).json({
+                success: false,
+                message: "labourId and projectNo are required"
+            });
+        }
+
+        const result = await labourService.getLabourPaymentsByProject(
+            labourId,
+            projectNo
+        );
+
+        res.status(200).json({
+            success: true,
+            data: result
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+};
+
+/**
+ * GET /api/labours/:labourId/payments
+ * Get all payments for a labour (across all projects)
+ */
+exports.getPaymentHistory = async (req, res) => {
+    try {
+        const { labourId } = req.params;
+
+        if (!labourId) {
+            return res.status(400).json({
+                success: false,
+                message: "labourId is required"
+            });
+        }
+
+        const result = await labourService.getLabourPayments(labourId);
+
+        res.status(200).json({
+            success: true,
+            data: result
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: error.message
+        });
+    }
+};
+
+/**
+ * GET /api/labours/payment/:paymentId
+ * Get payment details by ID
+ */
+exports.getPaymentDetails = async (req, res) => {
+    try {
+        const { paymentId } = req.params;
+
+        const result = await labourService.getPaymentById(paymentId);
+
+        res.status(200).json({
+            success: true,
+            data: result
+        });
+    } catch (error) {
+        res.status(404).json({
+            success: false,
+            message: error.message
+        });
+    }
+};
+
+/**
+ * PUT /api/labours/payment/:paymentId
+ * Update a labour payment
+ */
+exports.updatePayment = async (req, res) => {
+    try {
+        const { paymentId } = req.params;
+
+        const result = await labourService.updateLabourPayment(
+            paymentId,
+            req.body
+        );
+
+        res.status(200).json({
+            success: true,
+            message: "Payment updated successfully",
+            data: result
+        });
+    } catch (error) {
+        res.status(400).json({
+            success: false,
+            message: error.message
+        });
+    }
+};
+
+/**
+ * DELETE /api/labours/payment/:paymentId
+ * Delete a labour payment
+ */
+exports.deletePayment = async (req, res) => {
+    try {
+        const { paymentId } = req.params;
+
+        const result = await labourService.deleteLabourPayment(paymentId);
+
+        res.status(200).json({
+            success: true,
+            message: result.message,
+            data: result
+        });
+    } catch (error) {
+        res.status(404).json({
+            success: false,
+            message: error.message
+        });
+    }
+};
+
+module.exports = exports;
