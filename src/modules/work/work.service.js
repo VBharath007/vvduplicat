@@ -671,15 +671,16 @@ exports.getWorksByLabour = async (labourId) => {
         legacyNames = Array.from(new Set([raw, lower, upper, title]));
     }
 
-    const queries = [
-        worksCollection.where("labourDetails.headLabourId", "==", labourId).get(),
-        worksCollection.where(`labourDetails.${labourId}.headLabourId`, "==", labourId).get()
-    ];
+  const queries = [
+    // Modern keyed-map format — uses orderBy as "field exists" check
+    worksCollection.orderBy(`labourDetails.${labourId}.headLabourId`).get(),
+    // Legacy flat format (pre-migration)
+    worksCollection.where("labourDetails.headLabourId", "==", labourId).get(),
+];
 
-    // If we have name variations, also search by legacy "labourName"
-    if (legacyNames.length > 0) {
-        queries.push(worksCollection.where("labourName", "in", legacyNames).get());
-    }
+if (legacyNames.length > 0) {
+    queries.push(worksCollection.where("labourName", "in", legacyNames).get());
+}
 
     const snapshots = await Promise.all(queries);
 

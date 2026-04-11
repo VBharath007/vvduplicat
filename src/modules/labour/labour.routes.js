@@ -7,59 +7,32 @@ const { authorize } = require("../../middleware/role.middleware");
 
 const isAdmin = [verifyToken, authorize(["admin"])];
 
-router.put("/:labourId/payment", isAdmin, labourController.payLabour);
-
-// ─── Head Labour Master CRUD ────────────────────────────────────────────────
+// ─── Head Labour Master CRUD ───
 router.post("/master", isAdmin, labourController.addMasterLabour);
 router.get("/master", isAdmin, labourController.getAllHeadLabours);
 router.get("/master/:id", isAdmin, labourController.getHeadLabourById);
 router.put("/master/:id", isAdmin, labourController.updateMasterLabour);
 router.delete("/master/:id", isAdmin, labourController.deleteMasterLabour);
 
-// ⚠️ NEW: Filtered work details for specific labour in specific project
-// GET /api/labours/master/:labourId/projects/:projectNo/works/:workId
-// router.get("/master/:labourId/projects/:projectNo/works/:workId", isAdmin, labourController.getLabourWorkDetails);
-
-// GET /api/labours/master/:labourId/works - All works by this labour
+// ─── Labour work history (delegates to work module) ───
+router.get("/master/:labourId/projects/:projectNo/works", isAdmin, labourController.getLabourProjectWorks);
 router.get("/master/:labourId/works", isAdmin, workController.getWorksByLabour);
 
-// ─── Sub-Labour Type CRUD ────────────────────────────────────────────────────
+// ─── Sub-Labour Type CRUD ───
 router.post("/sublabour/other", isAdmin, labourController.addOtherType);
 router.get("/sublabour/other", isAdmin, labourController.getAllSubTypes);
 router.put("/sublabour/other/:id", isAdmin, labourController.updateSubType);
 router.delete("/sublabour/other/:id", isAdmin, labourController.deleteSubType);
 
-// Line 19 - add before the general /works route
-router.get("/master/:labourId/projects/:projectNo/works", isAdmin, labourController.getLabourProjectWorks);
-router.get("/master/:labourId/works", isAdmin, workController.getWorksByLabour);
-
-
-// ═════════════════════════════════════════════════════════════════════════════
-// ─── LABOUR PAYMENTS (ADD THIS TO THE END OF labour.routes.js) ────────────
-// ═════════════════════════════════════════════════════════════════════════════
-
-// ─── RECORD PAYMENT ────────────────────────────────────────────────────────
-// POST /api/labours/:labourId/:projectNo/payment
-router.post("/:labourId/:projectNo/payment", isAdmin, labourController.recordPayment);
-
-// ─── GET PAYMENTS FOR PROJECT ─────────────────────────────────────────────
-// GET /api/labours/:labourId/:projectNo/payments
-router.get("/:labourId/:projectNo/payments", isAdmin, labourController.getProjectPayments);
-
-// ─── GET ALL PAYMENTS FOR LABOUR ──────────────────────────────────────────
-// GET /api/labours/:labourId/payments
-router.get("/:labourId/payments", isAdmin, labourController.getPaymentHistory);
-
-// ─── GET PAYMENT DETAILS ──────────────────────────────────────────────────
-// GET /api/labours/payment/:paymentId
+// ─── LABOUR PAYMENTS ───
+// Specific paths FIRST
 router.get("/payment/:paymentId", isAdmin, labourController.getPaymentDetails);
-
-// ─── UPDATE PAYMENT ───────────────────────────────────────────────────────
-// PUT /api/labours/payment/:paymentId
 router.put("/payment/:paymentId", isAdmin, labourController.updatePayment);
-
-// ─── DELETE PAYMENT ───────────────────────────────────────────────────────
-// DELETE /api/labours/payment/:paymentId
 router.delete("/payment/:paymentId", isAdmin, labourController.deletePayment);
+
+// Parameterized paths AFTER
+router.post("/:labourId/:projectNo/payment", isAdmin, labourController.recordPayment);
+router.get("/:labourId/:projectNo/payments", isAdmin, labourController.getProjectPayments);
+router.get("/:labourId/payments", isAdmin, labourController.getPaymentHistory);
 
 module.exports = router;
