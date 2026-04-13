@@ -120,31 +120,26 @@ exports.createApproval = async (data) => {
 };
 
 exports.getApprovals = async () => {
-  const snap = await approvalsCollection.get();
+    const snap = await approvalsCollection.get();
 
-  let approvals = [];
-
-  for (const doc of snap.docs) {
-    const data = doc.data();
-
-    const num = parseInt(
-      (data.projectNo || "VVD0000").replace("VVD", "")
-    ) || 0;
-
-    approvals.push({
-      id: doc.id,
-      ...data,
-      _index: num,
+    const approvals = snap.docs.map(doc => {
+        const data = doc.data();
+        // Extract trailing digits from any prefix (VV, VVD, etc.)
+        const match = (data.projectNo || "").match(/(\d+)$/);
+        const num = match ? parseInt(match[1], 10) : 0;
+        return { id: doc.id, ...data, _index: num };
     });
-  }
 
-  approvals.sort((a, b) => b._index - a._index);
+    // DESC order — biggest projectNo first
+    approvals.sort((a, b) => b._index - a._index);
 
-  return approvals.map(a => {
-    delete a._index;
-    return a;
-  });
+    return approvals.map(a => {
+        delete a._index;
+        return a;
+    });
 };
+
+
 exports.getApprovalById = async (id) => {
     let doc = await approvalsCollection.doc(id).get();
     if (!doc.exists) {
@@ -177,21 +172,30 @@ exports.updateApproval = async (id, updateData) => {
     await docRef.update(updateData);
     return this.getApprovalById(id);
 };
+
 exports.getNextApprovalNo = async () => {
-  const snap = await approvalsCollection.get();
+    const snap = await approvalsCollection.get();
 
-  let max = 0;
+    let max = 0;
+    let prefix = "VV"; // default for fresh setups
 
-  snap.forEach(doc => {
-    const pNo = doc.data().projectNo || "VVD0000";
-    const num = parseInt(pNo.replace("VVD", "")) || 0;
+    snap.forEach(doc => {
+        const pNo = doc.data().projectNo || "";
+        const match = pNo.match(/^([A-Za-z]+)(\d+)$/);
+        if (!match) return;
 
-    if (num > max) max = num;
-  });
+        const [, pfx, digits] = match;
+        const num = parseInt(digits, 10) || 0;
 
-  const next = max + 1;
+        if (num > max) {
+            max = num;
+            prefix = pfx;   // keep the prefix that's actually being used
+        }
+    });
 
-  return `VVD${String(next).padStart(4, "0")}`;
+    const next = max + 1;
+    // pad to the same width as existing numbers (min 4)
+    return `${prefix}${String(next).padStart(4, "0")}`;
 };
 // --- Advances --- //
 exports.addAdvance = async (id, payload) => {
@@ -456,7 +460,7 @@ exports.getSummaryByDateRange = async (startDate, endDate) => {
     };
 
     const start = parseQueryDate(startDate);
-    const end   = parseQueryDate(endDate);
+    const end = parseQueryDate(endDate);
 
     // Set end to end of day so records created on endDate are included
     end.setHours(23, 59, 59, 999);
@@ -497,13 +501,13 @@ exports.getSummaryByDateRange = async (startDate, endDate) => {
         return null;
     };
 
-    const snap = await approvalsCollection.orderBy("projectNo", "asc").get();
+    const snap = await approvalsCollection.get();
 
     let totalAdvancedPaid = 0;
-    let totalExpensePaid  = 0;
-    let totalFees         = 0;
+    let totalExpensePaid = 0;
+    let totalFees = 0;
     let totalFinalBalance = 0;
-    const projects        = [];
+    const projects = [];
 
     for (const doc of snap.docs) {
         const data = doc.data();
@@ -521,33 +525,39 @@ exports.getSummaryByDateRange = async (startDate, endDate) => {
         const projectFees = Number(data.financialDetails?.totalFees) || 0;
 
         totalAdvancedPaid += calcs.advancedPaid;
-        totalExpensePaid  += calcs.expensePaid;
-        totalFees         += projectFees;
+        totalExpensePaid += calcs.expensePaid;
+        totalFees += projectFees;
         totalFinalBalance += calcs.finalBalance;
 
         projects.push({
-            id:           doc.id,
-            projectNo:    data.projectNo,
-            clientName:   data.clientName || "",
-            projectType:  data.projectType || "",
-            createdAt:    data.createdAt,
-            status:       data.statusTracking?.currentStatus || "ongoing",
-            totalFees:    projectFees,
+            id: doc.id,
+            projectNo: data.projectNo,
+            clientName: data.clientName || "",
+            projectType: data.projectType || "",
+            createdAt: data.createdAt,
+            status: data.statusTracking?.currentStatus || "ongoing",
+            totalFees: projectFees,
             advancedPaid: calcs.advancedPaid,
-            expensePaid:  calcs.expensePaid,
-            amountLeft:   calcs.amountLeft,
+            expensePaid: calcs.expensePaid,
+            amountLeft: calcs.amountLeft,
             finalBalance: calcs.finalBalance,
         });
     }
 
+    projects.sort((a, b) => {
+        const numA = parseInt((a.projectNo || "").match(/(\d+)$/)?.[1] || 0, 10);
+        const numB = parseInt((b.projectNo || "").match(/(\d+)$/)?.[1] || 0, 10);
+        return numB - numA;   // desc
+    });
+
     return {
         dateRange: { startDate, endDate },
         summary: {
-            totalProjects:    projects.length,
+            totalProjects: projects.length,
             totalFees,
             totalAdvancedPaid,
             totalExpensePaid,
-            totalAmountLeft:  totalAdvancedPaid - totalExpensePaid,
+            totalAmountLeft: totalAdvancedPaid - totalExpensePaid,
             totalFinalBalance,
         },
         projects,
