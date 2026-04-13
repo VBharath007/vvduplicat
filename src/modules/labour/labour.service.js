@@ -6,6 +6,7 @@ const banksCollection = db.collection("banks");
 const labourMasterCollection = db.collection(LABOUR_MASTERS);
 const subLabourTypeCollection = db.collection(SUB_LABOUR_TYPES);
 const labourPaymentsCollection = db.collection("labourPayments");
+const siteExpensesCollection = db.collection("siteExpenses");   // 🔥 NEW
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 const formatDate = (date) => {
@@ -15,6 +16,7 @@ const formatDate = (date) => {
     return d.isValid() ? d.format("DD-MM-YYYY HH:mm") : date;
 };
 const now = () => dayjs().format("DD-MM-YYYY HH:mm");
+const today = () => dayjs().format("DD-MM-YYYY");
 
 // ─── Default Sub-Labour Types ───────────────────────────────────────────────
 const DEFAULT_SUB_LABOUR_TYPES = [
@@ -141,8 +143,40 @@ exports.deleteSubLabourType = async (id) => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ─── LABOUR PAYMENTS ───────────────────────────────────────────────────────
+// ─── LABOUR PAYMENTS  (with siteExpenses auto-sync) ───────────────────────
 // ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Mirror a labour payment into siteExpenses (same doc ID — easy sync).
+ *
+ * IMPORTANT:  If the payment was made via BANK, we've ALREADY debited the
+ * bank balance inside recordLabourPayment().  So the siteExpense mirror
+ * must NOT deduct again.  We store paymentMethod so the expense module
+ * knows this record is a "mirror" and not a standalone expense.
+ */
+async function _syncLabourPaymentToSiteExpense(paymentId, payment) {
+    const rawDate = payment.date ? payment.date.split("T")[0] : today();
+
+    await siteExpensesCollection.doc(paymentId).set({
+        projectNo:         payment.projectNo,
+        type:              "labourPayment",               // 🔒 guarded in expense.service
+        labourId:          payment.labourId,
+        labourName:        payment.labourName,
+        amount:            Number(payment.amountPaid) || 0,
+        paymentMethod:     (payment.method || "cash").toUpperCase(),   // "CASH" | "BANK"
+        bankId:            payment.bankId || null,
+        bankName:          payment.bankName || null,
+        bankTransactionId: payment.bankTransactionId || null,
+        remark:            payment.remark || `Labour Payment – ${payment.labourName}`,
+        particular:        `Labour Payment – ${payment.labourName}`,
+        date:              rawDate,
+        fromDate:          payment.fromDate || null,
+        toDate:            payment.toDate   || null,
+        paymentId,                                        // back-reference
+        createdAt:         payment.createdAt || new Date().toISOString(),
+        updatedAt:         payment.updatedAt || null,
+    }, { merge: true });
+}
 
 exports.recordLabourPayment = async (labourId, projectNo, data) => {
     const { amount, method = "cash", bankId, fromDate, toDate, remark = "" } = data;
@@ -158,6 +192,7 @@ exports.recordLabourPayment = async (labourId, projectNo, data) => {
     let bankData = null;
     let bankTransactionId = null;
 
+    // ── BANK mode: deduct balance + create bank transaction ────────────────
     if (paymentMethod === "bank") {
         if (!bankId) throw new Error("bankId is required for bank payments");
         const bankDoc = await banksCollection.doc(bankId).get();
@@ -188,6 +223,7 @@ exports.recordLabourPayment = async (labourId, projectNo, data) => {
         bankTransactionId = txnRef.id;
     }
 
+    // ── Save master record in labourPayments ───────────────────────────────
     const payment = {
         labourId,
         labourName: labourData.name,
@@ -205,6 +241,15 @@ exports.recordLabourPayment = async (labourId, projectNo, data) => {
     };
 
     const ref = await labourPaymentsCollection.add(payment);
+
+    // ── 🔥 Mirror into siteExpenses (CASH or BANK both) ────────────────────
+    try {
+        await _syncLabourPaymentToSiteExpense(ref.id, payment);
+    } catch (syncErr) {
+        console.error("⚠️ siteExpense sync failed for payment", ref.id, syncErr.message);
+        // we don't throw — payment is already recorded; admin can re-sync later
+    }
+
     return { id: ref.id, ...payment };
 };
 
@@ -241,22 +286,41 @@ exports.updateLabourPayment = async (paymentId, data) => {
     if (!doc.exists) throw new Error("Payment not found");
 
     const updateData = { updatedAt: now() };
-    if (data.amount !== undefined) updateData.amountPaid = Number(data.amount);
-    if (data.remark !== undefined) updateData.remark = data.remark;
-    if (data.method !== undefined) updateData.method = data.method.toLowerCase();
-    if (data.bankId !== undefined) updateData.bankId = data.bankId;
+    if (data.amount   !== undefined) updateData.amountPaid = Number(data.amount);
+    if (data.remark   !== undefined) updateData.remark   = data.remark;
+    if (data.method   !== undefined) updateData.method   = data.method.toLowerCase();
+    if (data.bankId   !== undefined) updateData.bankId   = data.bankId;
     if (data.fromDate !== undefined) updateData.fromDate = data.fromDate;
-    if (data.toDate !== undefined) updateData.toDate = data.toDate;
+    if (data.toDate   !== undefined) updateData.toDate   = data.toDate;
 
     await docRef.update(updateData);
     const updated = await docRef.get();
-    return { id: paymentId, ...updated.data() };
+    const finalPayment = { id: paymentId, ...updated.data() };
+
+    // ── 🔥 Mirror the update into siteExpenses ─────────────────────────────
+    try {
+        await _syncLabourPaymentToSiteExpense(paymentId, finalPayment);
+    } catch (syncErr) {
+        console.error("⚠️ siteExpense update-sync failed for payment", paymentId, syncErr.message);
+    }
+
+    return finalPayment;
 };
 
 exports.deleteLabourPayment = async (paymentId) => {
     const docRef = labourPaymentsCollection.doc(paymentId);
     const doc = await docRef.get();
     if (!doc.exists) throw new Error("Payment not found");
+
     await docRef.delete();
+
+    // ── 🔥 Remove the siteExpense mirror ───────────────────────────────────
+    try {
+        const expRef = siteExpensesCollection.doc(paymentId);
+        if ((await expRef.get()).exists) await expRef.delete();
+    } catch (syncErr) {
+        console.error("⚠️ siteExpense delete-sync failed for payment", paymentId, syncErr.message);
+    }
+
     return { message: "Payment deleted successfully", id: paymentId };
 };
