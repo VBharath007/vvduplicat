@@ -730,9 +730,11 @@ exports.getWorksByLabour = async (labourId) => {
 
     const works = Array.from(worksMap.values());
 
-    // Enrich missing manual fields
+    // Enrich and Migrate each work entry to ensure consistent format
     for (let i = 0; i < works.length; i++) {
+        works[i] = await migrateLegacyLabourData(works[i]);
         works[i].labourDetails = await buildLabourDetails(works[i].labourDetails);
+        works[i] = cleanLegacyLabourFields(works[i]);
     }
 
     // Resolve project names (efficient batch fetch)
