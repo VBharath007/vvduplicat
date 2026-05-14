@@ -27,6 +27,8 @@ const worksCollection = db.collection(WORKS);
  * Resolves the head labour's current name/contact from the registry.
  * Uses the stored counts if available, otherwise returns zeros.
  */
+
+// hi 
 const buildLabourDetails = async (storedLabourDetails) => {
     if (
         !storedLabourDetails ||
