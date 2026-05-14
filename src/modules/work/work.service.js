@@ -457,14 +457,22 @@ exports.getWorks = async (projectNo) => {
     }
 
 
-    // Sort by date DESC, then work name ASC
-    // Sort by date ASC (14, 17, 18), then work name ASC
+    // Sort by date DESC (Latest First), then work name ASC
     return works.sort((a, b) => {
         const valA = _parseD(a.date).valueOf();
         const valB = _parseD(b.date).valueOf();
 
-        if (valA !== valB) return valA - valB;
+        const isAValid = !isNaN(valA);
+        const isBValid = !isNaN(valB);
 
+        // Push invalid dates to the bottom
+        if (!isAValid && !isBValid) return 0;
+        if (!isAValid) return 1;
+        if (!isBValid) return -1;
+
+        // Latest First (DESC)
+        if (valB !== valA) return valB - valA;
+        
         return (a.work || "").localeCompare(b.work || "");
     });
 };
@@ -791,7 +799,15 @@ exports.getWorksByLabour = async (labourId) => {
         works: p.works.sort((a, b) => {
             const valA = _parseD(a.date).valueOf();
             const valB = _parseD(b.date).valueOf();
-            return valA - valB; // Ascending order to match your request
+            
+            const isAValid = !isNaN(valA);
+            const isBValid = !isNaN(valB);
+
+            if (!isAValid && !isBValid) return 0;
+            if (!isAValid) return 1;
+            if (!isBValid) return -1;
+
+            return valB - valA; // Latest First (DESC)
         }),
         latestDate: p.works[0]?.date || null,
         totalWorks: p.works.length,
