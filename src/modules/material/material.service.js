@@ -223,7 +223,9 @@ exports.recordMaterialReceived = async (receivedData) => {
 exports.getMaterialReceived = async (projectNo) => {
     let query = materialReceivedCollection;
     if (projectNo) query = query.where("projectNo", "==", projectNo);
-    const snapshot = await query.get();
+    
+    // Sort by materialName alphabetically
+    const snapshot = await query.orderBy("materialName", "asc").get();
     return snapshot.docs.map(doc => ({ receiptId: doc.id, ...doc.data() }));
 };
 
@@ -691,9 +693,9 @@ exports.updateMaterialUsed = async (usageId, updateData) => {
 exports.getMaterialStock = async (projectNo) => {
     let snap;
     if (projectNo) {
-        snap = await stockCollection.where("projectNo", "==", projectNo).get();
+        snap = await stockCollection.where("projectNo", "==", projectNo).orderBy("materialName", "asc").get();
     } else {
-        snap = await stockCollection.get();
+        snap = await stockCollection.orderBy("materialName", "asc").get();
     }
     return snap.docs.map(doc => doc.data());
 };
@@ -756,6 +758,7 @@ exports.getMaterialRequired = async (projectNo) => {
 
     const snapshot = await materialRequiredCollection
         .where("projectNo", "==", projectNo)
+        .orderBy("materialName", "asc")
         .get();
 
     if (snapshot.empty) {

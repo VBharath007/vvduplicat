@@ -1,10 +1,27 @@
 const { db } = require("../../config/firebase");
+const dayjs = require("dayjs");
 
 const materialReceivedCollection = db.collection("materialReceived");
 const paymentsCollection = db.collection("dealerPayments");
 const projectsCollection = db.collection("projects");
 const siteExpensesCollection = db.collection("siteExpenses");
 const banksCollection = db.collection("banks");
+
+// ─── Date Helper ──────────────────────────────────────────────────────────────
+const _formatD = (d) => {
+    if (!d) return null;
+    const parsed = dayjs(d);
+    if (!parsed.isValid()) {
+        // Handle DD-MM-YYYY or other formats manually if dayjs fails on them directly
+        const parts = String(d).split("-");
+        if (parts.length === 3) {
+            // Already seems to be in some dash format, try to rearrange if needed or just return if it's already DD-MM-YYYY
+            if (parts[2].length === 4 && parts[0].length === 2) return d; 
+        }
+        return d;
+    }
+    return parsed.format("DD-MM-YYYY");
+};
 
 // ─── Internal helper ──────────────────────────────────────────────────────────
 const getPhoneVariations = (phone) => {
@@ -92,7 +109,7 @@ exports.getAllDealers = async () => {
         if (!d.dealerName && data.dealerName) d.dealerName = data.dealerName;
     });
 
-    return Object.values(dealerMap).map(d => ({
+    const dealers = Object.values(dealerMap).map(d => ({
         dealerName: d.dealerName,       // PRIMARY — shown as card title
         phoneNumber: d.phoneNumber,
         projectCount: d.projects.size,
@@ -102,6 +119,21 @@ exports.getAllDealers = async () => {
         transactionCount: d.transactionCount,
         status: d.remainingAmount <= 0 ? "Fully Paid" : "Pending",
     }));
+
+    // ── Calculate Overall Summary ─────────────────────────────────────────────
+    const overallTotal = dealers.reduce((sum, d) => sum + d.totalAmount, 0);
+    const overallPaid = dealers.reduce((sum, d) => sum + d.advancedPayment, 0);
+    const overallBalance = dealers.reduce((sum, d) => sum + d.remainingAmount, 0);
+
+    return {
+        dealers,
+        summary: {
+            totalAmount: overallTotal,
+            totalPaid: overallPaid,
+            totalBalance: overallBalance,
+            totalDealers: dealers.length
+        }
+    };
 };
 
 
@@ -169,7 +201,7 @@ exports.getDealerHistory = async (phoneNumber) => {
             totalAmount: totalAmt,
             paidAmount: paidAmt,
             remainingAmount: remAmt,
-            date: data.date || data.createdAt?.split("T")[0],
+            date: _formatD(data.date || data.createdAt),
             createdAt: data.createdAt,
             status: remAmt <= 0 ? "Fully Paid"
                 : paidAmt > 0 ? "Partially Paid" : "Pending",
@@ -212,8 +244,8 @@ exports.getDealerHistory = async (phoneNumber) => {
         overallSummary: {
             totalProjects: projects.length,
             totalAmount: overallTotal,
-            advancedPayment: overallPaid,
-            remainingAmount: overallRemaining,
+            totalPaid: overallPaid,
+            totalBalance: overallRemaining,
             status: overallRemaining <= 0 ? "Fully Paid" : "Pending",
         },
     };
@@ -299,11 +331,21 @@ exports.getDealerPaymentLog = async (phoneNumber) => {
                 totalBilled: 0,
                 totalPaid: 0,
                 balance: 0,
+                bills: []
             };
         }
         projectBreakdown[pNo].totalBilled += totalAmt;
         projectBreakdown[pNo].totalPaid += paidAmt;
         projectBreakdown[pNo].balance += (totalAmt - paidAmt);
+        projectBreakdown[pNo].bills.push({
+            id: doc.id,
+            materialName: data.materialName,
+            quantity: data.quantity,
+            totalAmount: totalAmt,
+            paidAmount: paidAmt,
+            remaining: totalAmt - paidAmt,
+            date: _formatD(data.date || data.createdAt)
+        });
     });
 
     let actualGlobalPaid = 0;
@@ -315,9 +357,9 @@ exports.getDealerPaymentLog = async (phoneNumber) => {
         dealerDetails: { dealerName, phoneNumber },
         projectBreakdown: Object.values(projectBreakdown),
         summary: {
-            totalBilled,
+            totalAmount: totalBilled,
             totalPaid: actualGlobalPaid,
-            remainingBalance: totalBilled - actualGlobalPaid,
+            totalBalance: totalBilled - actualGlobalPaid,
         },
     };
 };
@@ -804,3 +846,120 @@ exports.payDealerProjectPayment = async (phoneNumber, projectNo, amount, method,
         }
     };
 };
+
+
+// =============================================================================
+// deleteDealer
+//
+//  Permanently removes a dealer and ALL associated records:
+//    - materialReceived (reverses stock)
+//    - dealerPayments   (reverses bank if applicable)
+//    - siteExpenses     (materialPayment type)
+//
+//  ROUTE: DELETE /api/dealers/:phoneNumber
+// =============================================================================
+exports.deleteDealer = async (phoneNumber) => {
+    if (!phoneNumber) throw new Error("Phone number is required");
+
+    const variations = getPhoneVariations(phoneNumber);
+    
+    // 1. Fetch all related records
+    const [receiptSnap, paymentSnap, expenseSnap] = await Promise.all([
+        materialReceivedCollection.where("dealerContact", "in", variations).get(),
+        paymentsCollection.where("dealerContact", "in", variations).get(),
+        siteExpensesCollection.where("dealerContact", "in", variations).where("type", "==", "materialPayment").get()
+    ]);
+
+    if (receiptSnap.empty && paymentSnap.empty) {
+        throw new Error("No records found for this dealer");
+    }
+
+    const stockCollection = db.collection("stock");
+    const batch = db.batch();
+
+    // 2. Process Material Receipts (Stock Reversal + Bank Reversal + Delete)
+    for (const doc of receiptSnap.docs) {
+        const data = doc.data();
+        
+        // Stock reversal
+        const quantity = Number(data.quantity) || 0;
+        if (quantity > 0 && data.projectNo && data.materialId) {
+            const stockId = `${data.projectNo}_${data.materialId}`;
+            const stockRef = stockCollection.doc(stockId);
+            const stockDoc = await stockRef.get();
+            if (stockDoc.exists) {
+                const s = stockDoc.data();
+                batch.update(stockRef, {
+                    receivedQuantity: Math.max(0, (Number(s.receivedQuantity) || 0) - quantity),
+                    stock: Math.max(0, (Number(s.stock) || 0) - quantity),
+                    updatedAt: new Date().toISOString()
+                });
+            }
+        }
+
+        // Bank Reversal for Receipts
+        const paidAmount = Number(data.paidAmount) || 0;
+        if ((data.method || "").toLowerCase() === "bank" && data.bankId && paidAmount > 0) {
+            await _reverseBankTransaction(data.bankId, paidAmount, `Material Receipt Deleted (${doc.id})`);
+        }
+
+        batch.delete(doc.ref);
+    }
+
+    // 3. Process Dealer Payments (Bank Reversal + Delete)
+    for (const doc of paymentSnap.docs) {
+        const data = doc.data();
+        const amountPaid = Number(data.amountPaid) || 0;
+        if ((data.method || "").toLowerCase() === "bank" && data.bankId && amountPaid > 0) {
+            await _reverseBankTransaction(data.bankId, amountPaid, `Dealer Payment Deleted (${doc.id})`);
+        }
+        batch.delete(doc.ref);
+    }
+
+    // 4. Process Site Expenses (Delete only - bank already handled by receipts/payments)
+    for (const doc of expenseSnap.docs) {
+        batch.delete(doc.ref);
+    }
+
+    await batch.commit();
+
+    return {
+        message: `Dealer '${phoneNumber}' deleted successfully`,
+        summary: {
+            receiptsDeleted: receiptSnap.size,
+            paymentsDeleted: paymentSnap.size,
+            expensesDeleted: expenseSnap.size
+        }
+    };
+};
+
+// Internal Helper for Bank Reversal
+async function _reverseBankTransaction(bankId, amount, reason) {
+    try {
+        const bankRef = banksCollection.doc(bankId);
+        const bankDoc = await bankRef.get();
+        if (!bankDoc.exists) return;
+
+        const data = bankDoc.data();
+        const currentBalance = Number(data.currentBalance) || 0;
+        const newBalance = currentBalance + amount;
+
+        await bankRef.update({
+            currentBalance: newBalance,
+            closingBalance: newBalance,
+            updatedAt: new Date().toISOString()
+        });
+
+        await bankRef.collection("transactions").add({
+            type: "CREDIT",
+            amount,
+            remark: `System Reversal: ${reason}`,
+            transactionType: "DEALER_RECORD_DELETED",
+            balanceBefore: currentBalance,
+            balanceAfter: newBalance,
+            createdAt: new Date().toISOString()
+        });
+    } catch (err) {
+        console.error(`Bank reversal failed for ${bankId}:`, err.message);
+    }
+}

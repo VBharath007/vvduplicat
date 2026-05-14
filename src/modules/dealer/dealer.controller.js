@@ -103,3 +103,14 @@ exports.updateDealerPayment = async (req, res) => {
         res.status(400).json({ success: false, error: error.message });
     }
 };
+
+// ─── 8. Delete dealer and all associated records ──────────────────────────────
+// DELETE /api/dealers/:phoneNumber
+exports.deleteDealer = async (req, res) => {
+    try {
+        const result = await dealerService.deleteDealer(req.params.phoneNumber);
+        res.status(200).json({ success: true, data: result });
+    } catch (error) {
+        res.status(400).json({ success: false, error: error.message });
+    }
+}

@@ -32,4 +32,8 @@ router.put("/:bankId",                     isAdmin,     bankController.updateBan
 // router.post("/:bankId/transactions",      isAdmin,     bankController.addTransaction);
 router.put("/:bankId/transactions/:txId",       isAdmin,     bankController.updateTransaction);
 
-module.exports = router;
+// 🗑️ DELETE
+router.delete("/:bankId",                       isAdmin,     bankController.deleteBank);
+router.delete("/:bankId/transactions/:txId",    isAdmin,     bankController.deleteTransaction);
+
+module.exports = router;

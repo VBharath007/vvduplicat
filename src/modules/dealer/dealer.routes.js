@@ -40,5 +40,8 @@ router.put("/:phoneNumber/project/:projectNo/payment", isAdmin, dealerController
 // 7. Apply general payment across ALL projects (FIFO)
 router.put("/:phoneNumber/payment", isAdmin, dealerController.updateDealerPayment);
 
+// 8. Delete dealer and all associated records
+router.delete("/:phoneNumber", isAdmin, dealerController.deleteDealer);
+
 
 module.exports = router;

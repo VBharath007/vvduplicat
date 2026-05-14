@@ -304,3 +304,72 @@ exports.updateTransaction = async (bankId, txId, data) => {
     newBalance: balance,
   };
 };
+
+// ─────────────────────────────────────────────
+// 🗑️ DELETE BANK
+// ─────────────────────────────────────────────
+exports.deleteBank = async (bankId) => {
+  const bankRef = banksCollection.doc(bankId);
+  const bankDoc = await bankRef.get();
+  if (!bankDoc.exists) throw new Error("Bank not found");
+
+  // Delete all transactions in subcollection
+  const txSnapshot = await bankRef.collection("transactions").get();
+  const batchSize = 450;
+  const docs = txSnapshot.docs;
+
+  for (let i = 0; i < docs.length; i += batchSize) {
+    const batch = db.batch();
+    const chunk = docs.slice(i, i + batchSize);
+    chunk.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  }
+
+  // Delete the bank document
+  await bankRef.delete();
+
+  return { message: "Bank and all its transactions deleted successfully" };
+};
+
+// ─────────────────────────────────────────────
+// 🗑️ DELETE TRANSACTION
+// ─────────────────────────────────────────────
+exports.deleteTransaction = async (bankId, txId) => {
+  const bankRef = banksCollection.doc(bankId);
+  const bankDoc = await bankRef.get();
+  if (!bankDoc.exists) throw new Error("Bank not found");
+
+  const txRef = bankRef.collection("transactions").doc(txId);
+  const txDoc = await txRef.get();
+  if (!txDoc.exists) throw new Error("Transaction not found");
+
+  const txData = txDoc.data();
+  const bankData = bankDoc.data();
+
+  const amount = Number(txData.amount || 0);
+  const type = txData.type;
+  const currentBalance = Number(bankData.currentBalance || 0);
+
+  // Reverse the balance
+  let newBalance =
+    type === "CREDIT" ? currentBalance - amount : currentBalance + amount;
+
+  if (newBalance < 0) throw new Error("Insufficient balance after reversal");
+
+  // Update bank and delete transaction
+  const batch = db.batch();
+  batch.update(bankRef, {
+    currentBalance: newBalance,
+    closingBalance: newBalance,
+    updatedAt: new Date().toISOString(),
+  });
+  batch.delete(txRef);
+
+  await batch.commit();
+
+  return {
+    message: "Transaction deleted and balance updated",
+    transactionId: txId,
+    newBalance,
+  };
+};

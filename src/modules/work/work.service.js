@@ -18,13 +18,13 @@ const now = () => dayjs().format("DD-MM-YY HH:mm");
  * Uses the stored counts if available, otherwise returns zeros.
  */
 const buildLabourDetails = async (storedLabourDetails) => {
-  if (
-  !storedLabourDetails ||
-  typeof storedLabourDetails !== "object" ||
-  Object.keys(storedLabourDetails).length === 0
-) {
-  return {};
-}
+    if (
+        !storedLabourDetails ||
+        typeof storedLabourDetails !== "object" ||
+        Object.keys(storedLabourDetails).length === 0
+    ) {
+        return {};
+    }
 
     const masters = await labourService.getLabourMasters();
     const subTypes = await labourService.getSubLabourTypes();
@@ -154,7 +154,7 @@ const migrateLegacyLabourData = async (workData) => {
 const cleanLegacyLabourFields = (workData) => {
     const legacyFields = [
         'labourPhone',
-        'labourEntries', 
+        'labourEntries',
         'labourName',
         'labour',
         'headLabourId',
@@ -231,6 +231,16 @@ exports.createWork = async (workData) => {
     }
 
     const docRef = await worksCollection.add(payload);
+    
+    // If headLabourId was provided in workData, assign it immediately
+    if (workData.headLabourId) {
+        await exports.assignLabourToWork(projectNo, docRef.id, workData.headLabourId, workData.subLabourDetails);
+        const finalDoc = await worksCollection.doc(docRef.id).get();
+        const result = { workId: docRef.id, ...finalDoc.data() };
+        delete result.labourDetails;
+        return result;
+    }
+
     const result = { workId: docRef.id, ...payload };
     delete result.labourDetails;  // ⚠️ REMOVE FROM RESPONSE
     return result;
@@ -284,7 +294,7 @@ exports.assignLabourToWork = async (projectNo, workId, headLabourId, subLabourDe
     }
 
     await workRef.update({
-        labourDetails: map,
+        [`labourDetails.${master?.id || labourId}`]: map[master?.id || labourId],
         updatedAt: now()
     });
 
@@ -333,7 +343,7 @@ exports.updateSubLabourForWork = async (projectNo, workId, labourId, subLabourDe
     entry.totalLabourCount = Object.values(entry.subLabourDetails).reduce((s, v) => s + v, 0);
 
     await workRef.update({
-        labourDetails: map,
+        [`labourDetails.${master?.id || labourId}`]: map[master?.id || labourId],
         updatedAt: now()
     });
 
@@ -373,7 +383,7 @@ exports.editSubLabourCount = async (projectNo, workId, labourId, type, count) =>
     entry.totalLabourCount = Object.values(entry.subLabourDetails).reduce((s, v) => s + v, 0);
 
     await workRef.update({
-        labourDetails: map,
+        [`labourDetails.${master?.id || labourId}`]: map[master?.id || labourId],
         updatedAt: now()
     });
 
@@ -448,11 +458,13 @@ exports.getWorks = async (projectNo) => {
 
 
     // Sort by date DESC, then work name ASC
+    // Sort by date ASC (14, 17, 18), then work name ASC
     return works.sort((a, b) => {
-        const dateA = dayjs(a.date, "DD-MM-YYYY");
-        const dateB = dayjs(b.date, "DD-MM-YYYY");
-        if (dateB.isAfter(dateA)) return 1;
-        if (dateB.isBefore(dateA)) return -1;
+        const valA = _parseD(a.date).valueOf();
+        const valB = _parseD(b.date).valueOf();
+
+        if (valA !== valB) return valA - valB;
+
         return (a.work || "").localeCompare(b.work || "");
     });
 };
@@ -480,18 +492,18 @@ exports.getWorkById = async (workId, projectNo = null, labourId = null) => {
         if (hasLegacyLabour && !hasModernLabour) {
             work = await migrateLegacyLabourData(work);
         }
-        
+
         // Enrich ONLY if labour exists
         if (work.labourDetails && Object.keys(work.labourDetails).length > 0) {
             work.labourDetails = await buildLabourDetails(work.labourDetails);
-            
+
             // Filter by labourId if provided
             if (labourId) {
-                work.labourDetails = work.labourDetails[labourId] 
+                work.labourDetails = work.labourDetails[labourId]
                     ? { [labourId]: work.labourDetails[labourId] }
                     : {};
             }
-            
+
             // Remove if empty after filter
             if (Object.keys(work.labourDetails).length === 0) {
                 delete work.labourDetails;
@@ -499,7 +511,7 @@ exports.getWorkById = async (workId, projectNo = null, labourId = null) => {
         } else {
             delete work.labourDetails;
         }
-        
+
         // Clean legacy fields
         work = cleanLegacyLabourFields(work);
     } else {
@@ -526,6 +538,11 @@ exports.updateWork = async (workId, updateData) => {
     // Normalize work names if being updated
     if (updateData.work) updateData.work = updateData.work.trim().toUpperCase();
     if (updateData.workName) updateData.workName = updateData.workName.trim().toUpperCase();
+    // If labourDetails is provided in updateData, merge it with existing
+    if (updateData.labourDetails && typeof updateData.labourDetails === 'object') {
+        const existingData = doc.data();
+        updateData.labourDetails = { ...(existingData.labourDetails || {}), ...updateData.labourDetails };
+    }
 
     await docRef.update(updateData);
     const updated = await docRef.get();
@@ -559,7 +576,7 @@ const _generateDateVariations = (fromStr, toStr) => {
 
     let current = fromD;
     const variations = [];
-   while (current.valueOf() <= toD.valueOf())  {
+    while (current.valueOf() <= toD.valueOf()) {
         variations.push(current.format("DD-MM-YYYY"));
         variations.push(current.format("YYYY-MM-DD"));
         current = current.add(1, 'day');
@@ -681,16 +698,16 @@ exports.getWorksByLabour = async (labourId) => {
         legacyNames = Array.from(new Set([raw, lower, upper, title]));
     }
 
-  const queries = [
-    // Modern keyed-map format — uses orderBy as "field exists" check
-    worksCollection.orderBy(`labourDetails.${labourId}.headLabourId`).get(),
-    // Legacy flat format (pre-migration)
-    worksCollection.where("labourDetails.headLabourId", "==", labourId).get(),
-];
+    const queries = [
+        // Modern keyed-map format — uses orderBy as "field exists" check
+        worksCollection.orderBy(`labourDetails.${labourId}.headLabourId`).get(),
+        // Legacy flat format (pre-migration)
+        worksCollection.where("labourDetails.headLabourId", "==", labourId).get(),
+    ];
 
-if (legacyNames.length > 0) {
-    queries.push(worksCollection.where("labourName", "in", legacyNames).get());
-}
+    if (legacyNames.length > 0) {
+        queries.push(worksCollection.where("labourName", "in", legacyNames).get());
+    }
 
     const snapshots = await Promise.all(queries);
 

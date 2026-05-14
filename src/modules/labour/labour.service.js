@@ -68,9 +68,56 @@ exports.updateLabourMaster = async (id, data) => {
 
 exports.deleteLabourMaster = async (id) => {
     const docRef = labourMasterCollection.doc(id);
-    if (!(await docRef.get()).exists) throw new Error("Head labour master not found");
-    await docRef.delete();
-    return { message: "Head labour master deleted successfully" };
+    const doc = await docRef.get();
+    if (!doc.exists) throw new Error("Head labour master not found");
+
+    // ── 1. Fetch related records ─────────────────────────────────────────────
+    const [paymentSnap, workSnap] = await Promise.all([
+        labourPaymentsCollection.where("labourId", "==", id).get(),
+        db.collection("works").orderBy(`labourDetails.${id}.headLabourId`).get()
+    ]);
+
+    const batch = db.batch();
+
+    // ── 2. Process Payments & Mirrored Expenses ──────────────────────────────
+    for (const pDoc of paymentSnap.docs) {
+        const pData = pDoc.data();
+        
+        // Bank Reversal
+        if (pData.method === "bank" && pData.bankId && (Number(pData.amountPaid) || 0) > 0) {
+            await _reverseBankTransaction(pData.bankId, Number(pData.amountPaid), `Labour Payment Deleted: ${pDoc.id}`);
+        }
+
+        // Delete Payment & Mirror
+        batch.delete(pDoc.ref);
+        batch.delete(siteExpensesCollection.doc(pDoc.id));
+    }
+
+    // ── 3. Process Work Logs (Remove participation) ──────────────────────────
+    for (const wDoc of workSnap.docs) {
+        const wData = wDoc.data();
+        if (wData.labourDetails && wData.labourDetails[id]) {
+            const updatedDetails = { ...wData.labourDetails };
+            delete updatedDetails[id];
+            batch.update(wDoc.ref, {
+                labourDetails: updatedDetails,
+                updatedAt: new Date().toISOString()
+            });
+        }
+    }
+
+    // ── 4. Delete Master Record ──────────────────────────────────────────────
+    batch.delete(docRef);
+
+    await batch.commit();
+
+    return { 
+        message: "Head labour master and all associated records deleted successfully",
+        summary: {
+            paymentsDeleted: paymentSnap.size,
+            workLogsUpdated: workSnap.size
+        }
+    };
 };
 
 exports.getLabourMasters = async () => {
@@ -312,9 +359,17 @@ exports.deleteLabourPayment = async (paymentId) => {
     const doc = await docRef.get();
     if (!doc.exists) throw new Error("Payment not found");
 
+    const data = doc.data();
+
+    // ── 1. Bank Reversal ───────────────────────────────────────────────────
+    if (data.method === "bank" && data.bankId && (Number(data.amountPaid) || 0) > 0) {
+        await _reverseBankTransaction(data.bankId, Number(data.amountPaid), `Labour Payment Deleted: ${paymentId}`);
+    }
+
+    // ── 2. Delete Payment Document ──────────────────────────────────────────
     await docRef.delete();
 
-    // ── 🔥 Remove the siteExpense mirror ───────────────────────────────────
+    // ── 3. Remove the siteExpense mirror ────────────────────────────────────
     try {
         const expRef = siteExpensesCollection.doc(paymentId);
         if ((await expRef.get()).exists) await expRef.delete();
@@ -324,3 +379,34 @@ exports.deleteLabourPayment = async (paymentId) => {
 
     return { message: "Payment deleted successfully", id: paymentId };
 };
+
+// Internal Helper for Bank Reversal
+async function _reverseBankTransaction(bankId, amount, reason) {
+    try {
+        const bankRef = banksCollection.doc(bankId);
+        const bankDoc = await bankRef.get();
+        if (!bankDoc.exists) return;
+
+        const data = bankDoc.data();
+        const currentBalance = Number(data.currentBalance) || 0;
+        const newBalance = currentBalance + amount;
+
+        await bankRef.update({
+            currentBalance: newBalance,
+            closingBalance: newBalance,
+            updatedAt: new Date().toISOString()
+        });
+
+        await bankRef.collection("transactions").add({
+            type: "CREDIT",
+            amount,
+            remark: `System Reversal: ${reason}`,
+            transactionType: "LABOUR_RECORD_DELETED",
+            balanceBefore: currentBalance,
+            balanceAfter: newBalance,
+            createdAt: new Date().toISOString()
+        });
+    } catch (err) {
+        console.error(`Bank reversal failed for ${bankId}:`, err.message);
+    }
+}

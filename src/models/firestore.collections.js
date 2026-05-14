@@ -21,6 +21,8 @@ module.exports = {
     LABOUR_MASTERS: "labourMaster",
     SUB_LABOUR_TYPES: "subLabourTypes",
     LABOUR_PAYMENTS: "labourPayments",
+    EXTRA_WORKS: "extraWorks",
+    ADDITIONAL_WORKS: "additionalWorks",
 
 
 };

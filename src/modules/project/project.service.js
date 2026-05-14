@@ -6,6 +6,8 @@ const materialReceivedCollection = db.collection("materialReceived");
 const materialUsedCollection = db.collection("materialUsed");
 const siteExpensesCollection = db.collection("siteExpenses");
 const advancesCollection = db.collection("advances");
+const { ADDITIONAL_WORKS } = require("../../models/firestore.collections");
+const additionalWorksCollection = db.collection(ADDITIONAL_WORKS);
 
 const safeDelete = async (collectionName, projectNo) => {
   try {
@@ -370,6 +372,7 @@ exports.getProjectSummary = async (projectNo) => {
     ]);
 
     const receivedMap = {};
+    const dealerMap = {};
 
     receivedSnap.forEach(doc => {
         const data = doc.data();
@@ -385,6 +388,21 @@ exports.getProjectSummary = async (projectNo) => {
         receivedMap[data.materialId].receivedQuantity += Number(data.quantity) || 0;
         receivedMap[data.materialId].totalAmount += Number(data.totalAmount) || 0;
         receivedMap[data.materialId].totalPaid += Number(data.paidAmount) || 0;
+
+        // ── Dealer-wise balance calculation ──
+        const dealerPhone = data.dealerContact || "Unknown";
+        if (!dealerMap[dealerPhone]) {
+            dealerMap[dealerPhone] = {
+                dealerName: data.dealerName || "N/A",
+                dealerPhone: dealerPhone,
+                totalAmount: 0,
+                totalPaid: 0,
+                balance: 0
+            };
+        }
+        dealerMap[dealerPhone].totalAmount += Number(data.totalAmount) || 0;
+        dealerMap[dealerPhone].totalPaid += Number(data.paidAmount) || 0;
+        dealerMap[dealerPhone].balance = dealerMap[dealerPhone].totalAmount - dealerMap[dealerPhone].totalPaid;
     });
 
     usedSnap.forEach(doc => {
@@ -411,12 +429,35 @@ exports.getProjectSummary = async (projectNo) => {
         dueAmount: m.totalAmount - m.totalPaid,  // still owed to supplier
     }));
 
+    // ── Additional Work Summary ──────────────────────────────────────────────
+    const additionalWorkSnap = await additionalWorksCollection.where("projectNo", "==", projectNo).get();
+    let totalAdditionalWorkAmount = 0;
+    let totalAdditionalWorkReceived = 0;
+
+    additionalWorkSnap.forEach(doc => {
+        const data = doc.data();
+        totalAdditionalWorkAmount += Number(data.totalAmount) || 0;
+        totalAdditionalWorkReceived += Number(data.receivedAmount) || 0;
+    });
+
     // ── Financial summary via shared helper ───────────────────────────────────
     const financials = await _getFinancials(projectNo, project);
+
+    const dealers = Object.values(dealerMap);
+    const totalDealerBalance = dealers.reduce((sum, d) => sum + d.balance, 0);
 
     return {
         projectDetails: project,
         materialStock,
+        dealerSummary: {
+            dealers: dealers,
+            totalBalance: totalDealerBalance
+        },
+        additionalWorkSummary: {
+            totalAmount: totalAdditionalWorkAmount,
+            totalReceived: totalAdditionalWorkReceived,
+            totalBalance: totalAdditionalWorkAmount - totalAdditionalWorkReceived,
+        },
         financialSummary: {
             // ── Expense breakdown ──────────────────────────────────────────
             totalMaterialPayment: financials.materialPayTotal,  // paid to suppliers

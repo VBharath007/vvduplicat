@@ -138,3 +138,24 @@ exports.updateTransaction = async (req, res, next) => {
     next(err);
   }
 };
+
+exports.deleteBank = async (req, res, next) => {
+  try {
+    const result = await bankService.deleteBank(req.params.bankId);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    next(err);
+  }
+};
+
+exports.deleteTransaction = async (req, res, next) => {
+  try {
+    const result = await bankService.deleteTransaction(
+      req.params.bankId,
+      req.params.txId
+    );
+    res.json({ success: true, ...result });
+  } catch (err) {
+    next(err);
+  }
+};
