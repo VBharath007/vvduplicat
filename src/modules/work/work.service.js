@@ -7,28 +7,16 @@ const isSameOrBefore = require("dayjs/plugin/isSameOrBefore");
 
 dayjs.extend(isSameOrBefore);
 
-const now = () => dayjs().format("DD-MM-YY HH:mm");
-
-// Date parsing helper to handle arbitrary YYYY-MM-DD or DD-MM-YYYY formats.
-const _parseD = (dString) => {
-    if (!dString) return dayjs(0);
-    const parts = String(dString).split("T")[0].split("-");
-    if (parts.length === 3) {
-        if (parts[0].length === 4) return dayjs(`${parts[0]}-${parts[1]}-${parts[2]}`);
-        if (parts[2].length === 4) return dayjs(`${parts[2]}-${parts[1]}-${parts[0]}`);
-    }
-    return dayjs(dString);
-};
-
 const worksCollection = db.collection(WORKS);
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+const now = () => dayjs().format("DD-MM-YY HH:mm");
 
 /**
  * Builds a live labourDetails object for enrichment.
  * Resolves the head labour's current name/contact from the registry.
  * Uses the stored counts if available, otherwise returns zeros.
  */
-
-// hi 
 const buildLabourDetails = async (storedLabourDetails) => {
     if (
         !storedLabourDetails ||
@@ -469,6 +457,7 @@ exports.getWorks = async (projectNo) => {
     }
 
 
+    // Sort by date DESC, then work name ASC
     // Sort by date ASC (14, 17, 18), then work name ASC
     return works.sort((a, b) => {
         const valA = _parseD(a.date).valueOf();
@@ -567,6 +556,18 @@ exports.deleteWork = async (workId) => {
     return { message: "Work log deleted successfully" };
 };
 
+// Date parsing helper to handle arbitrary YYYY-MM-DD or DD-MM-YYYY formats.
+const _parseD = (dString) => {
+    if (!dString) return null;
+    const parts = String(dString).split("T")[0].split("-");
+    if (parts.length === 3) {
+        if (parts[0].length === 4) return dayjs(`${parts[0]}-${parts[1]}-${parts[2]}`);
+        if (parts[2].length === 4) return dayjs(`${parts[2]}-${parts[1]}-${parts[0]}`);
+    }
+    return dayjs(dString);
+};
+
+// Generates both forward and inverse date string formats for Firestore querying.
 const _generateDateVariations = (fromStr, toStr) => {
     const fromD = _parseD(fromStr);
     let toD = _parseD(toStr) || fromD;
@@ -787,10 +788,11 @@ exports.getWorksByLabour = async (labourId) => {
     // Sort each project's works by date desc
     const projects = Object.values(projectMap).map(p => ({
         ...p,
-        works: p.works.sort((a, b) =>
-            dayjs(b.date, "DD-MM-YYYY").valueOf() -
-            dayjs(a.date, "DD-MM-YYYY").valueOf()
-        ),
+        works: p.works.sort((a, b) => {
+            const valA = _parseD(a.date).valueOf();
+            const valB = _parseD(b.date).valueOf();
+            return valA - valB; // Ascending order to match your request
+        }),
         latestDate: p.works[0]?.date || null,
         totalWorks: p.works.length,
     }));
