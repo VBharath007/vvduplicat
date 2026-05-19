@@ -100,9 +100,19 @@ cron.schedule("* * * * *", async () => {
                 tokens: tokenList,
             };
 
+            let notificationSuccess = false;
+            let errorMsg = null;
+            let responseDetails = null;
+
             try {
                 const response = await admin.messaging().sendEachForMulticast(message);
                 console.log(`📢 Sent notification for task "${task.title}": ${response.successCount} success, ${response.failureCount} failed.`);
+                notificationSuccess = response.successCount > 0;
+                responseDetails = response.responses.map(r => ({
+                    success: r.success,
+                    messageId: r.messageId || null,
+                    error: r.error ? { code: r.error.code, message: r.error.message } : null
+                }));
                 
                 // Clean up stale tokens
                 if (response.responses) {
@@ -129,10 +139,15 @@ cron.schedule("* * * * *", async () => {
                 }
             } catch (err) {
                 console.error(`❌ Failed to send multicast message for task "${task.title}":`, err.message);
+                errorMsg = err.message;
             }
 
-            // Mark task as notified
-            await db.collection('tasks').doc(task.id).update({ notified: true });
+            // Mark task status in database
+            await db.collection('tasks').doc(task.id).update({ 
+                notified: notificationSuccess ? true : 'failed',
+                notificationError: errorMsg,
+                responseDetails: responseDetails
+            });
         }
     } catch (e) {
         console.error("❌ Cron check error:", e.message);
