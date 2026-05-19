@@ -151,3 +151,28 @@ exports.dashboard = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
+
+exports.updateFCMToken = async (req, res) => {
+    try {
+        const { fcmToken } = req.body;
+        if (!fcmToken) {
+            return res.status(400).json({ message: "fcmToken required" });
+        }
+        
+        let userDocRef = db.collection('admins').doc(req.user.id);
+        let userDoc = await userDocRef.get();
+        if (!userDoc.exists) {
+            userDocRef = db.collection('users').doc(req.user.id);
+            userDoc = await userDocRef.get();
+        }
+        if (!userDoc.exists) {
+            return res.status(404).json({ message: "User not found" });
+        }
+        
+        await userDocRef.update({ fcmToken });
+        res.status(200).json({ success: true, message: "FCM token updated successfully" });
+    } catch (error) {
+        console.error('[updateFCMToken]', error.message);
+        res.status(500).json({ message: error.message });
+    }
+};

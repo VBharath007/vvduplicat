@@ -224,9 +224,12 @@ exports.getMaterialReceived = async (projectNo) => {
     let query = materialReceivedCollection;
     if (projectNo) query = query.where("projectNo", "==", projectNo);
     
-    // Sort by materialName alphabetically
-    const snapshot = await query.orderBy("materialName", "asc").get();
-    return snapshot.docs.map(doc => ({ receiptId: doc.id, ...doc.data() }));
+    // Fetch first, then sort in memory to avoid needing a Firestore composite index
+    const snapshot = await query.get();
+    let data = snapshot.docs.map(doc => ({ receiptId: doc.id, ...doc.data() }));
+    
+    data.sort((a, b) => (a.materialName || "").localeCompare(b.materialName || ""));
+    return data;
 };
 
 exports.getMaterialReceivedByMaterialId = async (materialId) => {
@@ -756,20 +759,23 @@ exports.getMaterialRequired = async (projectNo) => {
         throw new Error("projectNo is required");
     }
 
+    // Fetch first, then sort in memory to avoid needing a Firestore composite index
     const snapshot = await materialRequiredCollection
         .where("projectNo", "==", projectNo)
-        .orderBy("materialName", "asc")
         .get();
 
     if (snapshot.empty) {
         return [];
     }
 
-    return snapshot.docs.map(doc => ({
+    let data = snapshot.docs.map(doc => ({
         id: doc.id,
         requiredId: doc.id,  // ← Also include as requiredId for consistency
         ...doc.data()
     }));
+    
+    data.sort((a, b) => (a.materialName || "").localeCompare(b.materialName || ""));
+    return data;
 };
 
 // ═════════════════════════════════════════════════════════════════════════════

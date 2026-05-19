@@ -37,7 +37,104 @@ app.listen(PORT, async () => {
 });
 
 
-// cron.schedule("0 0 1 * *", async () => {
-//     const lastMonth = dayjs().subtract(1, "month");
-//     // await generateMonthlySalary(lastMonth.format("MM"), lastMonth.format("YYYY"));
-// });
+// ⏰ Cron job to check task reminders and send FCM push notifications every minute
+cron.schedule("* * * * *", async () => {
+    try {
+        const { db, admin } = require("./src/config/firebase");
+        const dayjs = require("dayjs");
+        
+        const now = dayjs();
+        const tasksSnap = await db.collection('tasks')
+            .where('completed', '==', false)
+            .get();
+
+        const dueTasks = [];
+        tasksSnap.forEach(doc => {
+            const task = doc.data();
+            if (task.dueTimestamp && !task.notified) {
+                const dueTime = dayjs(task.dueTimestamp);
+                if (dueTime.isBefore(now) || dueTime.isSame(now, 'minute')) {
+                    dueTasks.push({ id: doc.id, ...task });
+                }
+            }
+        });
+
+        if (dueTasks.length === 0) return;
+
+        // Fetch all active tokens
+        const adminsSnap = await db.collection('admins').get();
+        const usersSnap = await db.collection('users').get();
+
+        const tokens = new Set();
+        adminsSnap.forEach(doc => {
+            const data = doc.data();
+            if (data.fcmToken) tokens.add(data.fcmToken);
+        });
+        usersSnap.forEach(doc => {
+            const data = doc.data();
+            if (data.fcmToken) tokens.add(data.fcmToken);
+        });
+
+        const tokenList = Array.from(tokens);
+        if (tokenList.length === 0) {
+            console.log(`⏰ ${dueTasks.length} tasks due, but no registered FCM tokens found.`);
+            // Still mark them as notified so we don't keep checking them indefinitely
+            for (const task of dueTasks) {
+                await db.collection('tasks').doc(task.id).update({ notified: true });
+            }
+            return;
+        }
+
+        console.log(`⏰ Found ${dueTasks.length} due tasks. Sending notifications to ${tokenList.length} devices...`);
+
+        for (const task of dueTasks) {
+            const message = {
+                notification: {
+                    title: "Task Reminder",
+                    body: task.title,
+                },
+                data: {
+                    type: "reminder",
+                    title: task.title,
+                },
+                tokens: tokenList,
+            };
+
+            try {
+                const response = await admin.messaging().sendEachForMulticast(message);
+                console.log(`📢 Sent notification for task "${task.title}": ${response.successCount} success, ${response.failureCount} failed.`);
+                
+                // Clean up stale tokens
+                if (response.responses) {
+                    for (let i = 0; i < response.responses.length; i++) {
+                        const res = response.responses[i];
+                        if (!res.success && (
+                            res.error?.code === 'messaging/invalid-registration-token' ||
+                            res.error?.code === 'messaging/registration-token-not-registered'
+                        )) {
+                            const staleToken = tokenList[i];
+                            console.log(`🗑️ Removing stale FCM token: ${staleToken}`);
+                            // Find and remove the token from Firestore
+                            const adminDoc = adminsSnap.docs.find(d => d.data().fcmToken === staleToken);
+                            if (adminDoc) {
+                                await db.collection('admins').doc(adminDoc.id).update({ fcmToken: admin.firestore.FieldValue.delete() });
+                            } else {
+                                const userDoc = usersSnap.docs.find(d => d.data().fcmToken === staleToken);
+                                if (userDoc) {
+                                    await db.collection('users').doc(userDoc.id).update({ fcmToken: admin.firestore.FieldValue.delete() });
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (err) {
+                console.error(`❌ Failed to send multicast message for task "${task.title}":`, err.message);
+            }
+
+            // Mark task as notified
+            await db.collection('tasks').doc(task.id).update({ notified: true });
+        }
+    } catch (e) {
+        console.error("❌ Cron check error:", e.message);
+    }
+});

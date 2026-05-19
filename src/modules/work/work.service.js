@@ -17,7 +17,7 @@ const now = () => dayjs().format("DD-MM-YY HH:mm");
  * Resolves the head labour's current name/contact from the registry.
  * Uses the stored counts if available, otherwise returns zeros.
  */
-const buildLabourDetails = async (storedLabourDetails) => {
+const buildLabourDetails = async (storedLabourDetails, preloadedMasters, preloadedSubTypes) => {
     if (
         !storedLabourDetails ||
         typeof storedLabourDetails !== "object" ||
@@ -26,8 +26,8 @@ const buildLabourDetails = async (storedLabourDetails) => {
         return {};
     }
 
-    const masters = await labourService.getLabourMasters();
-    const subTypes = await labourService.getSubLabourTypes();
+    const masters = preloadedMasters || await labourService.getLabourMasters();
+    const subTypes = preloadedSubTypes || await labourService.getSubLabourTypes();
 
     const fetchMasterInfo = (hId) => {
         let name = "N/A", phone = "N/A";
@@ -294,7 +294,7 @@ exports.assignLabourToWork = async (projectNo, workId, headLabourId, subLabourDe
     }
 
     await workRef.update({
-        [`labourDetails.${master?.id || labourId}`]: map[master?.id || labourId],
+        [`labourDetails.${master?.id || headLabourId}`]: map[master?.id || headLabourId],
         updatedAt: now()
     });
 
@@ -343,7 +343,7 @@ exports.updateSubLabourForWork = async (projectNo, workId, labourId, subLabourDe
     entry.totalLabourCount = Object.values(entry.subLabourDetails).reduce((s, v) => s + v, 0);
 
     await workRef.update({
-        [`labourDetails.${master?.id || labourId}`]: map[master?.id || labourId],
+        [`labourDetails.${labourId}`]: map[labourId],
         updatedAt: now()
     });
 
@@ -383,7 +383,7 @@ exports.editSubLabourCount = async (projectNo, workId, labourId, type, count) =>
     entry.totalLabourCount = Object.values(entry.subLabourDetails).reduce((s, v) => s + v, 0);
 
     await workRef.update({
-        [`labourDetails.${master?.id || labourId}`]: map[master?.id || labourId],
+        [`labourDetails.${labourId}`]: map[labourId],
         updatedAt: now()
     });
 
@@ -449,10 +449,16 @@ exports.getWorks = async (projectNo) => {
     const snapshot = await query.get();
     let works = snapshot.docs.map((doc) => ({ workId: doc.id, ...doc.data() }));
 
+    // Preload masters and subTypes in parallel to avoid duplicate DB calls in the loop
+    const [masters, subTypes] = await Promise.all([
+        labourService.getLabourMasters(),
+        labourService.getSubLabourTypes()
+    ]);
+
     // Migrate legacy data, enrich, and clean
     for (let i = 0; i < works.length; i++) {
         works[i] = await migrateLegacyLabourData(works[i]); // ⚠️ MIGRATE FIRST
-        works[i].labourDetails = await buildLabourDetails(works[i].labourDetails);
+        works[i].labourDetails = await buildLabourDetails(works[i].labourDetails, masters, subTypes);
         works[i] = cleanLegacyLabourFields(works[i]); // ⚠️ CLEAN LEGACY
     }
 
@@ -616,10 +622,16 @@ exports.getWorkByDate = async (projectNo, date) => {
 
     let works = snapshot.docs.map(doc => ({ workId: doc.id, ...doc.data() }));
 
+    // Preload masters and subTypes in parallel to avoid duplicate DB calls in the loop
+    const [masters, subTypes] = await Promise.all([
+        labourService.getLabourMasters(),
+        labourService.getSubLabourTypes()
+    ]);
+
     // Migrate, enrich, and clean
     for (let i = 0; i < works.length; i++) {
         works[i] = await migrateLegacyLabourData(works[i]); // ⚠️ MIGRATE
-        works[i].labourDetails = await buildLabourDetails(works[i].labourDetails);
+        works[i].labourDetails = await buildLabourDetails(works[i].labourDetails, masters, subTypes);
         works[i] = cleanLegacyLabourFields(works[i]); // ⚠️ CLEAN
     }
 
@@ -666,10 +678,16 @@ exports.getWorksByWeek = async (projectNo, fromDate, toDate) => {
 
     let works = Array.from(workMap.values());
 
+    // Preload masters and subTypes in parallel to avoid duplicate DB calls in the loop
+    const [masters, subTypes] = await Promise.all([
+        labourService.getLabourMasters(),
+        labourService.getSubLabourTypes()
+    ]);
+
     // Migrate, enrich, and clean
     for (let i = 0; i < works.length; i++) {
         works[i] = await migrateLegacyLabourData(works[i]); // ⚠️ MIGRATE
-        works[i].labourDetails = await buildLabourDetails(works[i].labourDetails);
+        works[i].labourDetails = await buildLabourDetails(works[i].labourDetails, masters, subTypes);
         works[i] = cleanLegacyLabourFields(works[i]); // ⚠️ CLEAN
     }
 
@@ -730,10 +748,16 @@ exports.getWorksByLabour = async (labourId) => {
 
     const works = Array.from(worksMap.values());
 
+    // Preload masters and subTypes in parallel to avoid duplicate DB calls in the loop
+    const [masters, subTypes] = await Promise.all([
+        labourService.getLabourMasters(),
+        labourService.getSubLabourTypes()
+    ]);
+
     // Enrich and Migrate each work entry to ensure consistent format
     for (let i = 0; i < works.length; i++) {
         works[i] = await migrateLegacyLabourData(works[i]);
-        works[i].labourDetails = await buildLabourDetails(works[i].labourDetails);
+        works[i].labourDetails = await buildLabourDetails(works[i].labourDetails, masters, subTypes);
         works[i] = cleanLegacyLabourFields(works[i]);
     }
 

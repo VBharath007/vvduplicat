@@ -35,14 +35,23 @@ exports.addExtraWork = async (data) => {
  * @returns {Array} list of entries
  */
 exports.getExtraWorks = async (projectNo = null) => {
-    let query = extraWorksCollection.orderBy("createdAt", "desc");
+    let query = extraWorksCollection;
     
     if (projectNo) {
         query = query.where("projectNo", "==", projectNo);
     }
 
     const snapshot = await query.get();
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    let results = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+    // Sort manually by createdAt desc to avoid composite index requirement
+    results.sort((a, b) => {
+        const dateA = new Date(a.createdAt || 0);
+        const dateB = new Date(b.createdAt || 0);
+        return dateB - dateA;
+    });
+
+    return results;
 };
 
 /**
