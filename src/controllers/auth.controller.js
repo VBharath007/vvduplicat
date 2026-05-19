@@ -230,6 +230,9 @@ exports.testFCM = async (req, res) => {
             title: t.title,
             createdAt: t.createdAt,
             dueTimestamp: t.dueTimestamp,
+            notified: t.notified,
+            notificationError: t.notificationError || null,
+            responseDetails: t.responseDetails || null,
             completed: t.completed
         }));
 
