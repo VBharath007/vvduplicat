@@ -66,7 +66,7 @@ exports.login = async (req, res) => {
             empID: userDoc.empID
         });
 
-        const safeUser = { ...userDoc };
+        const safeUser = { id: userId, ...userDoc };
         delete safeUser.password;   // never send password in response
 
         res.status(200).json({
@@ -89,8 +89,13 @@ exports.verifyMFA = async (req, res) => {
     if (mfaCode !== process.env.MFA_DEFAULT)
         return res.status(400).json({ message: "Invalid MFA Code" });
 
+    let userId = user.id || user.uid;
+    if (user.role === 'admin' && (!userId || userId === 'admin123')) {
+        userId = 'defaultAdmin';
+    }
+
     const token = generateToken({
-        id: user.uid,
+        id: userId,
         role: user.role,
         empID: user.empID
     });
