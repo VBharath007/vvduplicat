@@ -181,3 +181,52 @@ exports.updateFCMToken = async (req, res) => {
         res.status(500).json({ message: error.message });
     }
 };
+
+exports.testFCM = async (req, res) => {
+    try {
+        const { admin } = require("../config/firebase");
+        
+        // Fetch all active tokens
+        const adminsSnap = await db.collection('admins').get();
+        const usersSnap = await db.collection('users').get();
+
+        const tokens = new Set();
+        adminsSnap.forEach(doc => {
+            const data = doc.data();
+            if (data.fcmToken) tokens.add(data.fcmToken);
+        });
+        usersSnap.forEach(doc => {
+            const data = doc.data();
+            if (data.fcmToken) tokens.add(data.fcmToken);
+        });
+
+        const tokenList = Array.from(tokens);
+        if (tokenList.length === 0) {
+            return res.status(400).json({ success: false, message: "No registered FCM tokens found in database." });
+        }
+
+        const message = {
+            notification: {
+                title: "Test Reminder",
+                body: "வணக்கம்ணா! Kira Test notification work aagudhu பாருங்க!",
+            },
+            data: {
+                type: "reminder",
+                title: "Kira Test notification work aagudhu பாருங்க",
+            },
+            tokens: tokenList,
+        };
+
+        const response = await admin.messaging().sendEachForMulticast(message);
+        res.status(200).json({
+            success: true,
+            tokensSent: tokenList.length,
+            successCount: response.successCount,
+            failureCount: response.failureCount,
+            responses: response.responses
+        });
+    } catch (error) {
+        console.error('[testFCM]', error.message);
+        res.status(500).json({ message: error.message });
+    }
+};
