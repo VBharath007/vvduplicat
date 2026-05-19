@@ -218,8 +218,26 @@ exports.testFCM = async (req, res) => {
         };
 
         const response = await admin.messaging().sendEachForMulticast(message);
+        
+        // Diagnostic Info
+        const allTasksSnap = await db.collection('tasks').get();
+        const tasksList = [];
+        allTasksSnap.forEach(d => tasksList.push({ id: d.id, ...d.data() }));
+        tasksList.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+        
+        const recentTasks = tasksList.slice(0, 5).map(t => ({
+            id: t.id,
+            title: t.title,
+            createdAt: t.createdAt,
+            dueTimestamp: t.dueTimestamp,
+            completed: t.completed
+        }));
+
         res.status(200).json({
             success: true,
+            firebaseProjectId: admin.app().options.projectId || "unknown",
+            totalTasksInDb: tasksList.length,
+            recentTasksInDb: recentTasks,
             tokensSent: tokenList.length,
             successCount: response.successCount,
             failureCount: response.failureCount,
