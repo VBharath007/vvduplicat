@@ -52,7 +52,7 @@ cron.schedule("* * * * *", async () => {
         tasksSnap.forEach(doc => {
             const task = doc.data();
             if (task.dueTimestamp && !task.notified) {
-                const dueTime = dayjs(task.dueTimestamp);
+                const dueTime = dayjs(task.dueTimestamp + "+05:30");
                 if (dueTime.isBefore(now) || dueTime.isSame(now, 'minute')) {
                     dueTasks.push({ id: doc.id, ...task });
                 }
