@@ -89,10 +89,6 @@ cron.schedule("* * * * *", async () => {
 
         for (const task of dueTasks) {
             const message = {
-                notification: {
-                    title: "Task Reminder",
-                    body: task.notes ? `${task.title}\n${task.notes}` : task.title,
-                },
                 data: {
                     type: "reminder",
                     title: task.title,

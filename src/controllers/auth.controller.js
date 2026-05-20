@@ -206,13 +206,10 @@ exports.testFCM = async (req, res) => {
         }
 
         const message = {
-            notification: {
-                title: "Test Reminder",
-                body: "வணக்கம்ணா! Kira Test notification work aagudhu பாருங்க!",
-            },
             data: {
                 type: "reminder",
-                title: "Kira Test notification work aagudhu பாருங்க",
+                title: "Test Reminder",
+                notes: "Kira Test notification work aagudhu பாருங்க",
             },
             tokens: tokenList,
         };
