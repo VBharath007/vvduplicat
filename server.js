@@ -91,11 +91,12 @@ cron.schedule("* * * * *", async () => {
             const message = {
                 notification: {
                     title: "Task Reminder",
-                    body: task.title,
+                    body: task.notes ? `${task.title}\n${task.notes}` : task.title,
                 },
                 data: {
                     type: "reminder",
                     title: task.title,
+                    notes: task.notes || "",
                 },
                 tokens: tokenList,
             };
@@ -106,7 +107,11 @@ cron.schedule("* * * * *", async () => {
 
             try {
                 const response = await admin.messaging().sendEachForMulticast(message);
-                console.log(`📢 Sent notification for task "${task.title}": ${response.successCount} success, ${response.failureCount} failed.`);
+                if (response.successCount > 0) {
+                    console.log(`🟢 [FCM Trigger Success] FCM sent successfully for task "${task.title}".`);
+                } else {
+                    console.log(`📢 Sent notification for task "${task.title}": ${response.successCount} success, ${response.failureCount} failed.`);
+                }
                 notificationSuccess = response.successCount > 0;
                 responseDetails = response.responses.map(r => ({
                     success: r.success,

@@ -218,6 +218,11 @@ exports.testFCM = async (req, res) => {
         };
 
         const response = await admin.messaging().sendEachForMulticast(message);
+        if (response.successCount > 0) {
+            console.log("🟢 [FCM Trigger Success] Test notification sent successfully to all devices.");
+        } else {
+            console.log(`📢 Test notification status: ${response.successCount} success, ${response.failureCount} failed.`);
+        }
         
         // Diagnostic Info
         const allTasksSnap = await db.collection('tasks').get();
